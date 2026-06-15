@@ -1,0 +1,36 @@
+# Build output
+build/
+*.o
+*.obj
+*.lib
+*.dylib
+
+# CMake
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+Makefile
+*.cmake
+
+# IDE
+.vscode/
+.idea/
+.trae/
+*.sln
+*.vcxproj
+*.vcxproj.filters
+.git/
+
+# third_party
+third_party/obscura/*
+!third_party/obscura/README.md
+third_party/openserp/*
+!third_party/openserp/README.md
+
+# Logs
+*.log
+logs.txt
+
+# OS
+.DS_Store
+Thumbs.db

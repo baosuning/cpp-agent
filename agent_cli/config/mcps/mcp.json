@@ -1,0 +1,20 @@
+{
+  "mcpServers": {
+    "amap-maps-streamableHTTP": {
+      "url": "https://mcp.amap.com/mcp?key=${AMAP_API_KEY}"
+    },
+    "cloakbrowsermcp": {
+      "command": "python",
+      "args": ["-m", "cloakbrowsermcp"],
+      "timeout": 120000,
+      "env": {
+        "CLOAKBROWSER_BINARY_PATH": "${CLOAKBROWSER_BINARY_PATH}"
+      }
+    },
+    "obscura": {
+      "command": "obscura.exe",
+      "args": ["mcp", "--stealth"],
+      "timeout": 120000
+    }
+  }
+}
