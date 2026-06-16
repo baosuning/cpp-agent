@@ -1,0 +1,17 @@
+- [x] IToolRegistry 接口定义在 include/agent/i_tool_registry.h，包含 register_tool/update_tool/remove_tool/get_tool/has_tool/list_tools/get_tools_schema
+- [x] ToolRegistry 类实现 IToolRegistry 接口
+- [x] Agent 类提供 get_tool_registry() → shared_ptr<IToolRegistry> 方法
+- [x] IMcpManager 接口定义在 include/agent/i_mcp_manager.h，包含 register_mcp/get_mcp/list_mcps/has_mcp
+- [x] McpManager 类实现 IMcpManager 接口
+- [x] Agent 类提供 get_mcp_manager() → shared_ptr<IMcpManager> 方法
+- [x] MemoryManager 类已删除，Agent 直接持有 MemoryPtr
+- [x] ReactLoop 构造函数参数使用接口引用（IToolRegistry&/IMcpManager&/IMemory&/PersonalityDocs const&）
+- [x] PlanExecuteLoop 构造函数参数使用接口引用（同上）
+- [x] AgentLoopContext 字段类型全部为公共接口（无内部类引用）
+- [x] Agent::Impl 不再包含 init_mcps()、init_skills()、mcp_json_path_、skills_dir_、skill_scanner_
+- [x] AgentConfig 不再包含 skills_dir 和 mcps_dir 字段
+- [x] Agent::Impl 不再包含 PersonalityManager 成员，改为持有 PersonalityDocs 值对象
+- [x] agent_cli 承担 MCP 配置解析职责（读取 mcp.json，创建 McpClient，注册到 Agent）
+- [x] agent_cli 承担 Skill 扫描职责（创建 SkillScanner，注册 ReadSkillTool）
+- [x] agent_cli 在解析 MCP/Skill 后设置 mcp_doc/tools_doc 到 Agent 人格文档
+- [x] 编译通过，全部测试通过

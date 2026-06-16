@@ -4,7 +4,7 @@
 
 ## 特性
 
-- **双模式 Agent 引擎** — ReAct (Reasoning + Acting) 循环 + Plan-and-Execute (先规划再执行) 模式，均完整实现
+- **三模式 Agent 引擎** — ReAct (Reasoning + Acting) + Plan-and-Execute (先规划再执行) + Reflection (自我反思改进)，均完整实现
 - **多模型支持** — OpenAI、Claude (Anthropic)、Kimi (月之暗面)、DeepSeek (含 thinking mode)、GLM (智谱)
 - **工具系统** — 文件系统、Web 抓取、命令执行、脚本执行（Python/Batch）、多种搜索引擎（Bing、Bocha、Volcano、OpenSERP、百度AI）
 - **MCP 客户端** — 完整 JSON-RPC 2.0 协议实现，支持 stdio 和 HTTP 传输，内置 CloakBrowser 和 Obscura 浏览器自动化支持
@@ -30,7 +30,8 @@ agent-framework/
 │   │   │   ├── types.h             # 核心类型 (u8str, Message, ToolCall, LlmModelType, AgentMode 等)
 │   │   │   ├── agent_config.h      # Agent 配置结构体
 │   │   │   ├── personality.h       # 人格文档结构体
-│   │   │   ├── i_tool.h            # ITool 抽象接口
+│   │   │   ├── i_tool.h            # ITool + IToolRegistry 抽象接口
+│   │   │   ├── i_mcp.h             # IMcpManager + IMcpClient 抽象接口
 │   │   │   ├── i_llm_provider.h    # ILlmProvider 抽象接口
 │   │   │   ├── i_agent_loop.h      # IAgentLoop 抽象接口
 │   │   │   ├── i_prompt_builder.h  # IPromptBuilder 抽象接口
@@ -42,11 +43,14 @@ agent-framework/
 │   │       └── i_http_client.h     # IHttpClient 抽象接口
 │   └── src/                    # 框架核心实现
 │       ├── agent/              # Agent 引擎
-│       │   ├── agent_impl.h/cpp      # Agent 实现
-│       │   ├── react_loop.h/cpp      # ReAct 循环 (IAgentLoop 实现)
-│       │   ├── plan_execute_loop.h/cpp # Plan-and-Execute 循环 (IAgentLoop 实现)
-│       │   ├── prompt_builder.h/cpp  # Prompt 构建器 (IPromptBuilder 实现)
-│       │   └── context_manager.h/cpp # 默认上下文管理器 (IContextManager 实现)
+│       │   ├── agent_impl.h/cpp         # Agent 实现
+│       │   ├── agent_loop_base.h/cpp    # AgentLoop 公共基类
+│       │   ├── react_loop.h/cpp         # ReAct 循环 (IAgentLoop 实现)
+│       │   ├── plan_execute_loop.h/cpp  # Plan-and-Execute 循环 (IAgentLoop 实现)
+│       │   ├── plan_graph.h             # 计划图数据结构
+│       │   ├── reflection_loop.h/cpp    # Reflection 循环 (IAgentLoop 实现)
+│       │   ├── prompt_builder.h/cpp     # Prompt 构建器 (IPromptBuilder 实现)
+│       │   └── context_manager.h/cpp    # 默认上下文管理器 (IContextManager 实现)
 │       ├── llm/                # LLM Provider
 │       │   ├── llm_provider_factory.h/cpp  # LlmProviderFactory
 │       │   ├── openai_provider.h/cpp       # OpenAI
@@ -74,8 +78,11 @@ agent-framework/
 │       │   └── personality_manager.h/cpp  # 人格文档管理器
 │       ├── confirm/            # 用户确认
 │       │   └── default_confirm_handler.h/cpp  # 默认确认处理器
-│       └── util/
-│           └── winhttp_client.cpp         # WinHTTP 客户端实现
+│       └── util/               # 基础设施
+│           ├── winhttp_client.cpp        # WinHTTP 客户端实现
+│           ├── utf8_utils.h              # UTF-8 编码校验与清洗工具
+│           ├── u8str_utils.cpp           # u8str 工具函数
+│           └── log.cpp                   # 日志工具
 ├── agent_cli/                  # CLI 主程序
 │   ├── main.cpp                # 入口：YAML 配置加载、工具注册、交互循环
 │   ├── config/                 # Markdown 配置文件目录
@@ -83,24 +90,33 @@ agent-framework/
 │   │   ├── SOUL.md             # 人格描述 (≤200 字符)
 │   │   ├── IDENTITY.md         # 身份名片 (≤200 字符)
 │   │   ├── AGENTS.md           # 行为规范 (≤2000 字符)
-│   │   ├── skills/             # 自动扫描注册的技能
-│   │   │   └── get_cwd/SKILL.md
+│   │   ├── skills/             # 自动扫描注册的技能 (16 个)
+│   │   │   ├── get_cwd/SKILL.md
+│   │   │   ├── anysearch/SKILL.md ...  # 搜索引擎技能
+│   │   │   ├── docx/SKILL.md ...       # Word 文档操作
+│   │   │   ├── pptx/SKILL.md ...       # PPT 演示文稿操作
+│   │   │   ├── pdf/SKILL.md ...        # PDF 文档操作
+│   │   │   ├── xlsx/SKILL.md ...       # Excel 表格操作
+│   │   │   └── ...
 │   │   └── mcps/               # MCP 配置文件
 │   │       └── mcp.json
 │   └── src/                    # CLI 本地实现
 │       ├── utils/utils.h/cpp            # 编码转换、YAML Front Matter 解析
-│       ├── tools/echo_tool.h/cpp         # 回声工具
+│       ├── tools/
+│       │   ├── echo_tool.h/cpp           # 回声工具
+│       │   └── qr_code_tool.h/cpp        # 二维码生成工具 (含控制台打印)
 │       ├── memory/simple_memory.h/cpp    # 简单内存记忆 (IMemory 实现)
 │       └── web_search/           # 搜索引擎适配器
 │           ├── web_search_common.h/cpp    # 公共 HTTP 工具
 │           ├── web_search_impl.h/cpp      # 搜索引擎注册表
+│           ├── web_search_tool_base.h/cpp  # 搜索引擎公共基类
 │           ├── bing_search.h/cpp          # Bing 搜索
 │           ├── bocha_search.h/cpp         # 博查搜索
 │           ├── volcano_search.h/cpp       # 火山引擎搜索
 │           ├── openserp_search.h/cpp      # OpenSERP 本地代理搜索
 │           └── baidu_ai_search.h/cpp      # 百度 AI 搜索
 ├── tests/                     # 测试代码
-│   ├── framework_test/main.cpp   # 框架综合测试 (48 项)
+│   ├── framework_test/main.cpp   # 框架综合测试 (88 项)
 │   └── tool_test/main.cpp        # 内置工具测试 (23 项)
 └── third_party/               # 第三方依赖
     ├── nlohmann/json.hpp          # JSON 库
@@ -113,18 +129,22 @@ agent-framework/
 
 ## 架构设计
 
-### 循环引擎架构（双模式支持）
+### 循环引擎架构（三模式支持）
 
 ```
 Agent::create(config)
     │
-    ├── AgentMode::ReAct ──────────► ReactLoop
+    ├── AgentMode::React ──────────► ReactLoop
     │     └── Reasoning + Acting 交替循环
     │         适合简单任务，LLM 自主决定何时调用工具、何时给出最终答案
     │
     ├── AgentMode::PlanAndExecute ──► PlanExecuteLoop
-    │     └── 先规划 → 再逐步执行
+    │     └── 先规划 → 再逐步执行 → 汇总
     │         适合复杂多步骤任务，支持步骤级状态跟踪和文本格式工具调用解析
+    │
+    ├── AgentMode::Reflection ─────► ReflectionLoop
+    │     └── Generate → Critique → Refine 循环
+    │         适合质量敏感型任务，通过自我批评和改进提升输出质量
     │
     └── 工厂策略: agent_impl.cpp::process_loop() 根据 config.agent_mode 创建相应 Loop
 ```
@@ -147,7 +167,7 @@ Agent.submit_input()
     ▼
 Input Queue → Worker Thread (process_loop)
     │
-    ├── 选择 Loop 类型 (ReactLoop / PlanExecuteLoop)
+    ├── 选择 Loop 类型 (ReactLoop / PlanExecuteLoop / ReflectionLoop)
     │
     ▼
 IAgentLoop.run()
@@ -180,8 +200,10 @@ Auto-Continue 判断 ─── 输出需要用户输入? ──► 等待用户 
 | ILlmProvider | include/agent/ | LlmProviderFactory 创建 | ✅ |
 | IHttpClient | include/util/ | WinHttpClient | ❌ (内部创建) |
 | ITool | include/agent/ | 内置工具 (fs_tools 等) | ✅ 可动态注册 |
+| IToolRegistry | include/agent/ | ToolRegistry | ✅ AgentConfig 传入 |
+| IMcpManager | include/agent/ | McpManager | ✅ get_mcp_manager() |
 | IMemory | include/agent/ | SimpleMemory (agent_cli) | ✅ set_memory() |
-| IAgentLoop | include/agent/ | ReactLoop / PlanExecuteLoop | ✅ 通过 AgentConfig.agent_mode 选择 |
+| IAgentLoop | include/agent/ | ReactLoop / PlanExecuteLoop / ReflectionLoop | ✅ 通过工厂方法 (create_react/create_plan_execute/create_reflection) 选择 |
 | IPromptBuilder | include/agent/ | PromptBuilder | ✅ AgentConfig 传入 |
 | IContextManager | include/agent/ | DefaultContextManager | ✅ AgentConfig 传入 |
 | IUserConfirmHandler | include/agent/ | DefaultConfirmHandler | ✅ AgentConfig 传入 |
@@ -238,18 +260,41 @@ Agent 通过 ReAct (Reasoning + Acting) 模式工作。每一轮循环：
 3. 低温度 (0.3) 保持输出一致性
 4. 追加简短执行摘要 footer（如 "Execution complete. Steps: 7/7 completed"）
 
-**ReAct vs Plan-and-Execute 对比**：
+**ReAct vs Plan-and-Execute vs Reflection 对比**：
 
-| 维度 | ReAct | Plan-and-Execute |
-|------|-------|------------------|
-| 循环结构 | 单循环 | 三阶段（规划+执行+汇总） |
-| 计划 | 无 | 有，可查询步骤状态 |
-| 步骤跟踪 | 无 | 有（pending/in_progress/completed/failed） |
-| LLM 调用次数 | 较少 | 较多（规划+每步执行） |
-| 适用场景 | 简单任务 | 复杂多步骤任务 |
-| 文本工具调用解析 | 不支持 | 支持（兼容 GLM） |
+| 维度 | ReAct | Plan-and-Execute | Reflection |
+|------|-------|------------------|------------|
+| 循环结构 | 单循环 | 三阶段（规划+执行+汇总） | Generate → Critique → Refine |
+| 计划 | 无 | 有，可查询步骤状态 | 无 |
+| 步骤跟踪 | 无 | 有（pending/in_progress/completed/failed） | 无 |
+| LLM 调用次数 | 较少 | 较多（规划+每步执行） | 较多（生成+多轮反思） |
+| 适用场景 | 简单任务 | 复杂多步骤任务 | 质量敏感型任务 |
+| 文本工具调用解析 | 不支持 | 支持（兼容 GLM） | 不支持 |
+| 质量自检 | 无 | 无 | 有（Critic 评分 + Refine 改进） |
 
 切换模式仅需在 `agent.md` 配置中设置 `agent_mode: plan_execute`。
+
+### Reflection 模式
+
+通过 Generate → Critique → Refine 循环提升输出质量，适合代码生成、复杂推理、长文写作等质量敏感型场景。
+
+**Phase 1: Generate（生成阶段）**
+1. 构建 Reflection 专用 system prompt
+2. 调用 LLM（带工具）生成初始回答
+3. 保存 Phase 1 结束时的消息数量，用于后续上下文截断优化
+
+**Phase 2: Critique + Refine（反思改进阶段）**
+1. Critic LLM 评估当前回答质量，输出结构化评价（score 1-10、issues 列表、suggestions、acceptable）
+2. 如果 acceptable=YES → 输出当前回答作为最终结果
+3. 如果 acceptable=NO → 每轮 Refine 前截断上下文到 Phase 1 状态，避免上下文污染
+4. Generator LLM 根据批评反馈改进回答，可能调用工具辅助改进
+5. 重复直到通过或达到 `max_reflection_rounds`
+
+**双模型支持**：Critic 可使用独立 LLM（`critic_*` 配置），未配置时共享主 LLM。
+
+**Critic 降级策略**：Critic LLM 失败时，先尝试 Generator self-critique（让主 LLM 自评），两次都失败才最终降级为接受当前回答。
+
+**ReAct vs Plan-and-Execute vs Reflection 对比**：
 
 ### Auto-Continue 机制
 
@@ -318,6 +363,8 @@ MCP 工具名解析逻辑（支持三种格式）：
 
 当消息数超过 `max_context_messages` 时，自动压缩：前 1/3 消息摘要为一条 System 消息，保留后 2/3。
 
+提供 `truncate_to_messages(count)` 方法，用于 Reflection 模式中截断上下文到指定帧，避免多轮 Refine 导致上下文污染。
+
 ## 编译
 
 ### 环境要求
@@ -343,7 +390,7 @@ MCP 工具名解析逻辑（支持三种格式）：
 |------|------|
 | `build/agent_lib/src/libagent_framework.a` | 静态库 |
 | `build/agent_cli/agent_cli.exe` | CLI 主程序 |
-| `build/tests/framework_test.exe` | 框架综合测试 (动态计数) |
+| `build/tests/framework_test.exe` | 框架综合测试 (88 项) |
 | `build/tests/tool_test.exe` | 工具功能测试 (23 项) |
 
 ### 运行测试
@@ -368,7 +415,7 @@ top_p: 0.9
 max_steps: 15
 enable_thinking: true
 auto_confirm: true
-agent_mode: plan_execute    # react, plan_execute 或 reflection
+agent_mode: react              # react, plan_execute 或 reflection
 debug: false
 ---
 ```
@@ -380,13 +427,43 @@ debug: false
 | 配置项 | 默认值 | 说明 |
 |--------|--------|------|
 | `max_reflection_rounds` | 3 | 最大 Critique → Refine 循环次数 |
+| `critic_model_type` | (同主模型) | Critic 独立的 LLM 模型类型 |
+| `critic_model_name` | (同主模型) | Critic 独立的模型名称 |
+| `critic_api_base_url` | (同主模型) | Critic 独立的 API 端点 |
+| `critic_temperature` | (同主模型) | Critic 温度参数（建议 0.3 更稳定） |
+| `critic_max_tokens` | (同主模型) | Critic 最大 Token |
+| `critic_top_p` | (同主模型) | Critic Top-P 采样 |
+
+### Plan-and-Execute 模式专属配置
+
+当 `agent_mode` 设置为 `plan_execute` 时，可配置以下额外参数：
+
+| 配置项 | 默认值 | 说明 |
+|--------|--------|------|
+| `max_replan_attempts` | 3 | 最大重规划次数 |
+| `max_step_retries` | 2 | 单步最大重试次数 |
+| `planner_model_type` | (同主模型) | Planner 独立的 LLM 模型类型 |
+| `planner_model_name` | (同主模型) | Planner 独立的模型名称 |
+| `planner_api_base_url` | (同主模型) | Planner 独立的 API 端点 |
+| `planner_temperature` | (同主模型) | Planner 温度参数 |
+| `planner_max_tokens` | (同主模型) | Planner 最大 Token |
+| `planner_top_p` | (同主模型) | Planner Top-P 采样 |
+| `executor_model_type` | (同主模型) | Executor 独立的 LLM 模型类型 |
+| `executor_model_name` | (同主模型) | Executor 独立的模型名称 |
+| `executor_api_base_url` | (同主模型) | Executor 独立的 API 端点 |
+| `executor_temperature` | (同主模型) | Executor 温度参数 |
+| `executor_max_tokens` | (同主模型) | Executor 最大 Token |
+| `executor_top_p` | (同主模型) | Executor Top-P 采样 |
 
 ### 环境变量
 
 | 变量 | 说明 | 必须 |
 |------|------|------|
 | `LLM_API_KEY` | 大模型 API 密钥 | ✅ |
-| `AGENT_CONFIG_DIR` | 配置文件目录路径 | ❌ (默认从源码路径推断) |
+| `LLM_CRITIC_API_KEY` | Critic 独立 LLM 的 API Key（回退到 `LLM_API_KEY`） | ❌ |
+| `LLM_PLANNER_API_KEY` | Planner 独立 LLM 的 API Key（回退到 `LLM_API_KEY`） | ❌ |
+| `LLM_EXECUTOR_API_KEY` | Executor 独立 LLM 的 API Key（回退到 `LLM_API_KEY`） | ❌ |
+| `AGENT_CONFIG_DIR` | 配置文件目录路径 | ❌ (默认从 exe 所在路径推断) |
 | `BING_SEARCH_KEY` | Bing 搜索 API Key | ❌ |
 | `BOCHA_SEARCH_KEY` | 博查搜索 API Key | ❌ |
 | `VOLCANO_SEARCH_KEY` | 火山引擎搜索 API Key | ❌ |
@@ -402,6 +479,7 @@ $env:LLM_API_KEY = "your-api-key"
 # 指定模式
 .\build\agent_cli\agent_cli.exe --mode plan_execute
 .\build\agent_cli\agent_cli.exe --mode react
+.\build\agent_cli\agent_cli.exe --mode reflection
 
 # 调试模式
 .\build\agent_cli\agent_cli.exe --debug
@@ -415,8 +493,14 @@ agent_cli/config/
 ├── SOUL.md              # 人格
 ├── IDENTITY.md          # 身份
 ├── AGENTS.md            # 行为规范
-├── skills/              # 自动注册的技能
-│   └── get_cwd/SKILL.md
+├── skills/              # 自动注册的技能 (16 个)
+│   ├── get_cwd/SKILL.md
+│   ├── anysearch/SKILL.md ...  # 无 API Key 的搜索引擎
+│   ├── docx/SKILL.md ...       # Word 文档操作
+│   ├── pptx/SKILL.md ...       # PPT 操作
+│   ├── pdf/SKILL.md ...        # PDF 操作
+│   ├── xlsx/SKILL.md ...       # Excel 操作
+│   └── ...
 └── mcps/                # MCP 服务
     └── mcp.json         # MCP Server JSON 配置
 ```
@@ -441,6 +525,7 @@ agent_cli/config/
 | python_script | 执行 Python 脚本 | ❌ |
 | run_script | 执行 Batch/Shell 脚本 | ❌ |
 | read_skill | 读取技能文档 | ❌ |
+| qr_code | 生成二维码 (含控制台打印) | ❌ |
 | echo | 回声工具 (agent_cli 示例) | ❌ |
 
 搜索工具（按环境变量条件加载）：
