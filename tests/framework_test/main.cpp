@@ -1986,6 +1986,175 @@ void test_reflection_thinking_steps() {
         test_fail("No step contains 'Critique result'");
 }
 
+void test_reflection_critic_fallback_chain() {
+    test_header("ReflectionLoop - Critic Fallback Chain");
+
+    auto mock_llm = std::make_shared<MockLlmProvider>();
+
+    // 第一次 LLM 调用（generate）：纯文本回答
+    {
+        agent::LlmResponse resp;
+        resp.content = strtou8("The capital of France is Paris.");
+        mock_llm->responses.push_back(std::move(resp));
+    }
+
+    // 第二次 LLM 调用（critique attempt 1）：Critic 调用失败
+    {
+        agent::LlmResponse resp;
+        resp.is_error = true;
+        resp.error_message = strtou8("Critic LLM unavailable");
+        mock_llm->responses.push_back(std::move(resp));
+    }
+
+    // 第三次 LLM 调用（critique attempt 2）：Critic 调用再次失败
+    {
+        agent::LlmResponse resp;
+        resp.is_error = true;
+        resp.error_message = strtou8("Critic LLM still unavailable");
+        mock_llm->responses.push_back(std::move(resp));
+    }
+
+    // 第四次 LLM 调用（self-critique 回退）：Generator 自评通过
+    {
+        agent::LlmResponse resp;
+        resp.content = strtou8(R"({"score": 9, "issues": [], "suggestions": [], "acceptable": "YES"})");
+        mock_llm->responses.push_back(std::move(resp));
+    }
+
+    agent::ReflectionLoopConfig ref_config;
+    ref_config.base.auto_confirm = true;
+    ref_config.base.enable_thinking = true;
+
+    agent::DefaultContextManager context;
+    agent::PromptBuilder prompt_builder;
+    auto tool_registry = agent::create_tool_registry();
+    agent::McpManager mcps;
+    TestMemory memory;
+    agent::PersonalityDocs personality;
+
+    agent::ReflectionLoop loop(
+        mock_llm, nullptr, context, prompt_builder, *tool_registry, mcps, memory,
+        personality, ref_config);
+
+    loop.run(strtou8("What is the capital of France?"));
+
+    // 验证 LLM 调用次数：1 generate + 2 critic retries + 1 self-critique = 4
+    if (mock_llm->call_count == 4)
+        test_pass("LLM call count is 4 (1 generate + 2 critic retries + 1 self-critique)");
+    else
+        test_fail("LLM call count: expected 4, got " + std::to_string(mock_llm->call_count));
+
+    if (loop.get_state() == agent::AgentState::Completed)
+        test_pass("State is Completed");
+    else
+        test_fail("State should be Completed");
+
+    auto output = loop.get_final_output();
+    if (output && u8tostr(*output) == "The capital of France is Paris.")
+        test_pass("Output is correct (original answer accepted via self-critique)");
+    else if (output)
+        test_fail("Output mismatch: " + u8tostr(*output));
+    else
+        test_fail("Output is nullopt");
+
+    // 验证思考步骤包含降级标记
+    auto steps = loop.get_thinking_steps();
+    bool has_critique = false;
+    for (const auto& step : steps) {
+        std::string content = u8tostr(step.thinking_content);
+        if (content.find("Critique result") != std::string::npos) has_critique = true;
+    }
+    if (has_critique)
+        test_pass("Critique result step is present (self-critique accepted)");
+    else
+        test_fail("No critique result step found");
+}
+
+void test_reflection_final_fallback_on_all_fail() {
+    test_header("ReflectionLoop - Final Fallback (Critic + Self-Critique All Fail)");
+
+    auto mock_llm = std::make_shared<MockLlmProvider>();
+
+    // 第一次 LLM 调用（generate）：纯文本回答
+    {
+        agent::LlmResponse resp;
+        resp.content = strtou8("The answer is 42.");
+        mock_llm->responses.push_back(std::move(resp));
+    }
+
+    // 第二次 LLM 调用（critique attempt 1）：Critic 调用失败
+    {
+        agent::LlmResponse resp;
+        resp.is_error = true;
+        resp.error_message = strtou8("Critic LLM crash");
+        mock_llm->responses.push_back(std::move(resp));
+    }
+
+    // 第三次 LLM 调用（critique attempt 2）：Critic 调用再次失败
+    {
+        agent::LlmResponse resp;
+        resp.is_error = true;
+        resp.error_message = strtou8("Critic LLM crash again");
+        mock_llm->responses.push_back(std::move(resp));
+    }
+
+    // 第四次 LLM 调用（self-critique 回退）：自评也失败
+    {
+        agent::LlmResponse resp;
+        resp.is_error = true;
+        resp.error_message = strtou8("Self-critique LLM also failed");
+        mock_llm->responses.push_back(std::move(resp));
+    }
+
+    agent::ReflectionLoopConfig ref_config;
+    ref_config.base.auto_confirm = true;
+    ref_config.base.enable_thinking = true;
+
+    agent::DefaultContextManager context;
+    agent::PromptBuilder prompt_builder;
+    auto tool_registry = agent::create_tool_registry();
+    agent::McpManager mcps;
+    TestMemory memory;
+    agent::PersonalityDocs personality;
+
+    agent::ReflectionLoop loop(
+        mock_llm, nullptr, context, prompt_builder, *tool_registry, mcps, memory,
+        personality, ref_config);
+
+    loop.run(strtou8("What is the answer?"));
+
+    // 验证 LLM 调用次数：1 generate + 2 critic retries + 1 self-critique = 4
+    if (mock_llm->call_count == 4)
+        test_pass("LLM call count is 4 (1 generate + 2 critic + 1 self-critique, all failed)");
+    else
+        test_fail("LLM call count: expected 4, got " + std::to_string(mock_llm->call_count));
+
+    if (loop.get_state() == agent::AgentState::Completed)
+        test_pass("State is Completed (final fallback to accept)");
+    else
+        test_fail("State should be Completed");
+
+    auto output = loop.get_final_output();
+    if (output && u8tostr(*output) == "The answer is 42.")
+        test_pass("Output is correct (original answer accepted via final fallback)");
+    else if (output)
+        test_fail("Output mismatch: " + u8tostr(*output));
+    else
+        test_fail("Output is nullopt");
+
+    // 验证思考步骤包含降级标记
+    auto steps = loop.get_thinking_steps();
+    bool has_accept = false;
+    for (const auto& step : steps) {
+        std::string content = u8tostr(step.thinking_content);
+        if (content.find("Answer accepted") != std::string::npos) has_accept = true;
+    }
+    if (has_accept)
+        test_pass("Answer accepted step is present (final fallback accepted)");
+    else
+        test_fail("No answer accepted step found");
+}
+
 void test_reflection_create_reflection_factory() {
     test_header("ReflectionLoop - create_reflection Factory");
 
@@ -2051,6 +2220,8 @@ int main() {
     test_reflection_max_rounds_reached();
     test_reflection_tool_usage_in_generation();
     test_reflection_thinking_steps();
+    test_reflection_critic_fallback_chain();
+    test_reflection_final_fallback_on_all_fail();
     test_reflection_create_reflection_factory();
     test_full_agent_run();
     test_dangerous_tool_confirmation();
