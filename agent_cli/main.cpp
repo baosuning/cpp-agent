@@ -3,8 +3,10 @@
 #include <agent/i_tool.h>
 #include <agent/i_memory.h>
 #include <util/log.h>
+#include <util/i_http_client.h>
 #include <nlohmann/json.hpp>
-#include "web_search/web_search_impl.h"
+#include "app/agent_factory.h"
+#include "channels/channel_factory.h"
 #include "utils/utils.h"
 #include "tools/echo_tool.h"
 #include "tools/qr_code_tool.h"
@@ -24,25 +26,118 @@
 #include <filesystem>
 #include <mutex>
 #include <condition_variable>
+#include <atomic>
+#include <csignal>
 
 namespace fs = std::filesystem;
+
+// WeChat 模式退出信号
+static std::atomic<bool> g_should_stop{false};
+
+static void signal_handler(int) {
+    g_should_stop.store(true);
+}
+
+// 渠道模式入口（微信/飞书/企业微信/QQ 等统一入口）
+static int run_channel_mode(const std::string& platform,
+                            const fs::path& config_dir,
+                            const char* api_key_env,
+                            const std::string& mode_str,
+                            bool debug) {
+    AGENT_LOG_INFO("Main") << "========== Channel Mode Starting ==========";
+    AGENT_LOG_INFO("Main") << "Platform: " << platform;
+    AGENT_LOG_INFO("Main") << "Config dir: " << config_dir.string();
+    AGENT_LOG_INFO("Main") << "Agent mode: " << (mode_str.empty() ? "(from config)" : mode_str);
+    AGENT_LOG_INFO("Main") << "Debug: " << (debug ? "true" : "false");
+
+    // 创建 Agent（复用 agent_factory）
+    AGENT_LOG_INFO("Main") << "[1/4] Creating Agent via agent_factory...";
+    auto build = agent_cli::create_agent(config_dir, api_key_env, mode_str, debug);
+    if (!build.agent) {
+        AGENT_LOG_ERROR("Main") << "Failed to create agent";
+        return 1;
+    }
+    AGENT_LOG_INFO("Main") << "[1/4] Agent created, mode=" << build.mode_str
+        << ", debug=" << (build.debug ? "true" : "false");
+
+    if (debug) {
+        agent::log::set_level(agent::log::Level::Debug);
+    }
+
+    // 创建 HTTP 客户端
+    AGENT_LOG_INFO("Main") << "[2/4] Creating HTTP client...";
+    auto http = agent::create_http_client();
+    AGENT_LOG_INFO("Main") << "[2/4] HTTP client created";
+
+    // 通过工厂创建渠道（平台无关）
+    AGENT_LOG_INFO("Main") << "[3/4] Creating channel via factory, platform='" << platform << "'...";
+    auto channel = agent_cli::channels::create_channel(platform, *http, "data/");
+    if (!channel) {
+        AGENT_LOG_ERROR("Main") << "Unsupported channel platform: " << platform
+            << " (supported: wechat; feishu/wecom/qq reserved)";
+        std::cerr << "Unsupported channel platform: " << platform << "\n"
+                  << "Supported: wechat (feishu/wecom/qq reserved for future)\n";
+        return 1;
+    }
+    AGENT_LOG_INFO("Main") << "[3/4] Channel created, implementation="
+        << platform << " (IChannel subclass)";
+
+    // 启动 Agent 引擎
+    AGENT_LOG_INFO("Main") << "[4/4] Starting Agent engine...";
+    build.agent->start();
+    AGENT_LOG_INFO("Main") << "[4/4] Agent engine started";
+
+    // 启动渠道
+    AGENT_LOG_INFO("Main") << "Starting channel (platform=" << platform << ")...";
+    if (!channel->start(*build.agent)) {
+        AGENT_LOG_ERROR("Main") << "Failed to start " << platform << " channel";
+        std::cerr << "Failed to start " << platform << " channel\n";
+        build.agent->stop();
+        return 1;
+    }
+    AGENT_LOG_INFO("Main") << "Channel started successfully (platform=" << platform << ")";
+
+    // 注册 Ctrl+C 信号处理
+    std::signal(SIGINT, signal_handler);
+
+    AGENT_LOG_INFO("Main") << "========== Channel Mode Ready ==========";
+    std::cout << platform << " channel running. Press Ctrl+C to stop.\n";
+
+    // 等待退出信号
+    while (!g_should_stop.load()) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(200));
+    }
+
+    AGENT_LOG_INFO("Main") << "========== Channel Mode Stopping ==========";
+    std::cout << "\nStopping...\n";
+    channel->stop();
+    AGENT_LOG_INFO("Main") << "Channel stopped (platform=" << platform << ")";
+    build.agent->stop();
+    AGENT_LOG_INFO("Main") << "Agent engine stopped";
+    std::cout << "Agent stopped.\n";
+    return 0;
+}
 
 int main() {
 #ifdef _WIN32
     SetConsoleOutputCP(CP_UTF8);
 #endif
 
+    AGENT_LOG_INFO("Main") << "========== Agent CLI Starting ==========";
+
     const char* api_key_env = std::getenv("LLM_API_KEY");
     if (!api_key_env) {
         AGENT_LOG_ERROR("Main") << "Environment variable LLM_API_KEY is not set";
         return 1;
     }
+    AGENT_LOG_INFO("Main") << "LLM_API_KEY detected (len=" << strlen(api_key_env) << ")";
 
     // 定位配置文件目录
     fs::path config_dir;
     const char* env_config_dir = std::getenv("AGENT_CONFIG_DIR");
     if (env_config_dir && *env_config_dir) {
         config_dir = fs::path(env_config_dir);
+        AGENT_LOG_INFO("Main") << "Config dir from AGENT_CONFIG_DIR: " << config_dir.string();
     } else {
 #ifdef _WIN32
         char exe_path[MAX_PATH];
@@ -51,72 +146,13 @@ int main() {
 #else
         config_dir = fs::path(__FILE__).parent_path() / "config";
 #endif
+        AGENT_LOG_INFO("Main") << "Config dir from exe path: " << config_dir.string();
     }
 
-    // 解析 agent.md 配置
-    auto agent_yaml = agent_cli::parse_yaml_file(config_dir / "agent.md");
-    auto& kv = agent_yaml.front_matter;
-
-    auto get_config = [&](const std::string& key, const std::string& default_val = "") -> std::string {
-        auto it = kv.find(key);
-        if (it != kv.end() && !it->second.empty()) {
-            return it->second;
-        }
-        return default_val;
-    };
-
-    auto try_parse_double = [](const std::string& s, double default_val) -> double {
-        if (s.empty()) return default_val;
-        try { return std::stod(s); } catch (...) { return default_val; }
-    };
-    auto try_parse_int = [](const std::string& s, int default_val) -> int {
-        if (s.empty()) return default_val;
-        try { return std::stoi(s); } catch (...) { return default_val; }
-    };
-
-    // ========== 构建 AgentConfig ==========
-    agent::AgentConfig agent_config;
-
-    // 模型配置（内部据此自动创建 LLM Provider）
-    agent_config.model_config.model_type = agent_cli::parse_model_type(get_config("model_type", "DeepSeek"));
-    agent_config.model_config.model_name = agent_cli::strtou8(get_config("model_name", "deepseek-v4-flash"));
-    agent_config.model_config.api_base_url = agent_cli::strtou8(get_config("api_base_url", "https://api.deepseek.com/v1"));
-    agent_config.model_config.api_key = agent_cli::strtou8(api_key_env);
-    agent_config.model_config.temperature = try_parse_double(get_config("temperature"), 0.7);
-    agent_config.model_config.max_tokens = try_parse_int(get_config("max_tokens"), 8192);
-    agent_config.model_config.top_p = try_parse_double(get_config("top_p"), 1.0);
-
-    int max_steps = try_parse_int(get_config("max_steps"), 15);
-    bool enable_thinking = (get_config("enable_thinking", "true") == "true");
-    bool auto_confirm = (get_config("auto_confirm", "false") == "true");
-    bool debug = (get_config("debug", "false") == "true");
-
-    std::string mode_str = get_config("agent_mode", "react");
-
-    // ========== 辅助 LLM 配置构建 ==========
-    // 为 Critic/Planner/Executor 构建独立的 LlmModelConfig
-    // model_name 为空时返回空 config，agent_impl 会自动回退到主 LLM
-    auto build_llm_config = [&](const std::string& prefix, const char* env_var_name) -> agent::LlmModelConfig {
-        auto mn = get_config(prefix + "model_name", "");
-        if (mn.empty()) return {};
-        agent::LlmModelConfig cfg;
-        cfg.model_type = agent_cli::parse_model_type(get_config(prefix + "model_type", get_config("model_type")));
-        cfg.model_name = agent_cli::strtou8(mn);
-        cfg.api_base_url = agent_cli::strtou8(get_config(prefix + "api_base_url", get_config("api_base_url")));
-        cfg.temperature = try_parse_double(get_config(prefix + "temperature"),
-                                           try_parse_double(get_config("temperature"), 0.7));
-        cfg.max_tokens = try_parse_int(get_config(prefix + "max_tokens"),
-                                       try_parse_int(get_config("max_tokens"), 8192));
-        cfg.top_p = try_parse_double(get_config(prefix + "top_p"),
-                                     try_parse_double(get_config("top_p"), 1.0));
-        // API key: 先取角色专用环境变量，没有则回退到 LLM_API_KEY
-        const char* key = std::getenv(env_var_name);
-        if (!key || !*key) key = api_key_env;
-        cfg.api_key = agent_cli::strtou8(key);
-        return cfg;
-    };
-
-    // 命令行参数覆盖
+    // 命令行参数解析
+    std::string mode_str;
+    std::string channel_platform;  // 非空则进入渠道模式
+    bool debug = false;
 #ifdef _WIN32
     int argc;
     LPWSTR* argv = CommandLineToArgvW(GetCommandLineW(), &argc);
@@ -134,138 +170,50 @@ int main() {
                 } else {
                     mode_str = "react";
                 }
+                AGENT_LOG_INFO("Main") << "Arg --mode = " << mode_str;
                 ++i;
             } else if (arg == L"--debug") {
                 debug = true;
+                AGENT_LOG_INFO("Main") << "Arg --debug = true";
+            } else if (arg == L"--wechat") {
+                // --wechat 是 --channel wechat 的简写
+                channel_platform = "wechat";
+                AGENT_LOG_INFO("Main") << "Arg --wechat (alias for --channel wechat)";
+            } else if (arg == L"--channel" && i + 1 < argc) {
+                // 通用渠道参数：--channel wechat|feishu|wecom|qq
+                std::wstring plat(argv[i + 1]);
+                std::string s(plat.begin(), plat.end());
+                channel_platform = s;
+                AGENT_LOG_INFO("Main") << "Arg --channel = " << channel_platform;
+                ++i;
             }
         }
         LocalFree(argv);
     }
 #endif
 
-    // 设置日志级别
+    // 渠道模式（微信/飞书/企业微信/QQ）：统一入口
+    if (!channel_platform.empty()) {
+        AGENT_LOG_INFO("Main") << "Entering channel mode, platform=" << channel_platform;
+        return run_channel_mode(channel_platform, config_dir, api_key_env, mode_str, debug);
+    }
+
+    // ========== CLI 模式：创建 Agent ==========
+    AGENT_LOG_INFO("Main") << "Entering CLI interactive mode";
+    AGENT_LOG_INFO("Main") << "[1/2] Creating Agent via agent_factory...";
+    auto build = agent_cli::create_agent(config_dir, api_key_env, mode_str, debug);
+    auto& agent_ptr = build.agent;
+    debug = build.debug;
+
+    if (!agent_ptr) {
+        AGENT_LOG_ERROR("Main") << "Failed to create agent";
+        return 1;
+    }
+    AGENT_LOG_INFO("Main") << "[1/2] Agent created, mode=" << build.mode_str
+        << ", debug=" << (build.debug ? "true" : "false");
+
     if (debug) {
         agent::log::set_level(agent::log::Level::Debug);
-    }
-
-    // Tool Registry（需要注册自定义工具，所以手动设置）
-    auto tool_registry = agent::create_tool_registry();
-    tool_registry->register_tool(std::make_shared<agent_cli::EchoTool>());
-    tool_registry->register_tool(std::make_shared<agent_cli::QrCodeTool>());
-    tool_registry->register_tool(agent::create_execute_command_tool());
-    tool_registry->register_tool(agent::create_python_script_tool());
-    tool_registry->register_tool(agent::create_shell_script_tool());
-    for (const auto& tool : agent::create_file_system_tools()) {
-        tool_registry->register_tool(tool);
-    }
-    tool_registry->register_tool(agent::create_web_fetch_tool());
-
-    // 搜索工具
-    const char* bing_key = std::getenv("BING_SEARCH_KEY");
-    if (bing_key && *bing_key) {
-        tool_registry->register_tool(agent::create_bing_search_tool(bing_key));
-    }
-    const char* engines_str = std::getenv("OPENSERP_SEARCH_ENGINES");
-    if (engines_str && *engines_str) {
-        std::vector<std::string> search_engines;
-        std::string s(engines_str);
-        std::stringstream ss(s);
-        std::string engine;
-        while (std::getline(ss, engine, ',')) {
-            engine.erase(0, engine.find_first_not_of(" \t"));
-            engine.erase(engine.find_last_not_of(" \t") + 1);
-            if (!engine.empty()) search_engines.push_back(engine);
-        }
-        if (!search_engines.empty()) {
-            tool_registry->register_tool(agent::create_openserp_search_tool(search_engines));
-            AGENT_LOG_INFO("Main") << "OpenSERP configured with engines: " << engines_str;
-        }
-    }
-    const char* bocha_key = std::getenv("BOCHA_SEARCH_KEY");
-    if (bocha_key && *bocha_key) {
-        tool_registry->register_tool(agent::create_bocha_search_tool(bocha_key));
-    }
-    const char* volcano_key = std::getenv("VOLCANO_SEARCH_KEY");
-    if (volcano_key && *volcano_key) {
-        tool_registry->register_tool(agent::create_volcano_search_tool(volcano_key));
-    }
-    const char* baidu_ai_key = std::getenv("BAIDU_AI_SEARCH_KEY");
-    if (baidu_ai_key && *baidu_ai_key) {
-        tool_registry->register_tool(agent::create_baidu_ai_search_tool(baidu_ai_key));
-        AGENT_LOG_INFO("Main") << "Baidu AI Search enabled";
-    }
-
-    agent_config.tool_registry = tool_registry;
-
-    // MCP 配置文件（Agent 内部自动加载并连接 MCP 服务器）
-    fs::path mcp_json_path = config_dir / "mcps" / "mcp.json";
-    if (fs::exists(mcp_json_path)) {
-        agent_config.mcp_config_path = mcp_json_path;
-    }
-
-    // Memory
-    agent_config.memory = std::make_shared<agent_cli::SimpleMemory>();
-
-    // Personality
-    agent::PersonalityDocs& personality = agent_config.personality;
-    personality.soul = agent_cli::strtou8(agent_cli::read_file(config_dir / "SOUL.md"));
-    personality.identity = agent_cli::strtou8(agent_cli::read_file(config_dir / "IDENTITY.md"));
-    personality.agents = agent_cli::strtou8(agent_cli::read_file(config_dir / "AGENTS.md"));
-
-    // Skill 目录（Agent 内部自动扫描并注册 ReadSkillTool）
-    fs::path skills_dir = config_dir / "skills";
-    if (fs::exists(skills_dir)) {
-        agent_config.skill_dirs.push_back(skills_dir);
-    }
-
-    // Loop 配置
-    agent::InnerLoopConfig loop_config;
-    loop_config.max_steps = max_steps;
-    loop_config.enable_thinking = enable_thinking;
-    loop_config.auto_confirm = auto_confirm;
-    loop_config.debug = debug;
-
-    // ========== 创建 Agent ==========
-    agent::AgentPtr agent_ptr;
-
-    if (mode_str == "plan_execute") {
-        int max_replan_attempts = try_parse_int(get_config("max_replan_attempts"), 3);
-        int max_step_retries = try_parse_int(get_config("max_step_retries"), 2);
-        agent::LlmModelConfig planner_llm_config = build_llm_config("planner_", "LLM_PLANNER_API_KEY");
-        agent::LlmModelConfig executor_llm_config = build_llm_config("executor_", "LLM_EXECUTOR_API_KEY");
-
-        agent::PlanExecuteAgentConfig pe_config;
-        static_cast<agent::AgentConfig&>(pe_config) = agent_config;
-        pe_config.max_steps = max_steps;
-        pe_config.enable_thinking = enable_thinking;
-        pe_config.auto_confirm = auto_confirm;
-        pe_config.debug = debug;
-        pe_config.planner_model_config = planner_llm_config;
-        pe_config.executor_model_config = executor_llm_config;
-        pe_config.max_step_retries = max_step_retries;
-        pe_config.replan_config.max_replan_attempts = max_replan_attempts;
-        agent_ptr = agent::Agent::create_plan_execute(pe_config);
-    } else if (mode_str == "reflection") {
-        int max_reflection_rounds = try_parse_int(get_config("max_reflection_rounds"), 3);
-        agent::LlmModelConfig critic_llm_config = build_llm_config("critic_", "LLM_CRITIC_API_KEY");
-
-        agent::ReflectionAgentConfig ref_config;
-        static_cast<agent::AgentConfig&>(ref_config) = agent_config;
-        ref_config.max_steps = max_steps;
-        ref_config.enable_thinking = enable_thinking;
-        ref_config.auto_confirm = auto_confirm;
-        ref_config.debug = debug;
-        ref_config.max_reflection_rounds = max_reflection_rounds;
-        ref_config.critic_model_config = critic_llm_config;
-        agent_ptr = agent::Agent::create_reflection(ref_config);
-    } else {
-        agent::ReactAgentConfig react_config;
-        static_cast<agent::AgentConfig&>(react_config) = agent_config;
-        react_config.max_steps = max_steps;
-        react_config.enable_thinking = enable_thinking;
-        react_config.auto_confirm = auto_confirm;
-        react_config.debug = debug;
-        agent_ptr = agent::Agent::create_react(react_config);
     }
 
     // ========== 回调 ==========
@@ -414,7 +362,10 @@ int main() {
     });
 
     // ========== 启动 Agent ==========
+    AGENT_LOG_INFO("Main") << "[2/2] Starting Agent engine...";
     agent_ptr->start();
+    AGENT_LOG_INFO("Main") << "[2/2] Agent engine started";
+    AGENT_LOG_INFO("Main") << "========== CLI Mode Ready ==========";
 
     std::cout << "Agent started. Type your input (or 'quit' to exit):" << std::endl;
 
@@ -463,7 +414,9 @@ int main() {
         agent_ptr->submit_input(line);
     }
 
+    AGENT_LOG_INFO("Main") << "========== CLI Mode Stopping ==========";
     agent_ptr->stop();
+    AGENT_LOG_INFO("Main") << "Agent engine stopped";
     std::cout << "Agent stopped." << std::endl;
 
     return 0;

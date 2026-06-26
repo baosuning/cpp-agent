@@ -31,6 +31,9 @@ third_party/openserp/*
 *.log
 logs.txt
 
+# WeChat runtime data (session tokens, sync cursor, qr images)
+data/wechat/
+
 # OS
 .DS_Store
 Thumbs.db
