@@ -550,6 +550,19 @@ void WeChatChannel::run_typing_during_processing(const std::string& context_toke
     }
 }
 
+// 将 end 回退到 UTF-8 字符边界（确保不在多字节字符中间截断）
+// 返回调整后的 end 值，保证 text[pos, end) 是完整的 UTF-8 序列
+static size_t adjust_to_utf8_boundary(const std::string& text, size_t pos, size_t end) {
+    if (end >= text.size()) return text.size();
+    if (end <= pos) return pos;
+    // UTF-8 后续字节范围 0x80-0xBF，首字节不在该范围
+    // 向前回退直到 end 指向一个首字节或 ASCII 字节
+    while (end > pos && (static_cast<unsigned char>(text[end]) & 0xC0) == 0x80) {
+        --end;
+    }
+    return end;
+}
+
 void WeChatChannel::reply(const std::string& text) {
     std::string token;
     std::string to_user;
@@ -570,7 +583,7 @@ void WeChatChannel::reply(const std::string& text) {
             AGENT_LOG_ERROR("WeChatChannel") << "send_text failed (len=" << text.size() << ")";
         }
     } else {
-        // 按 kMaxChunk 分段，尽量在换行处切分
+        // 按 kMaxChunk 分段，尽量在换行处切分，并保证不在 UTF-8 字符中间截断
         size_t pos = 0;
         int part = 1;
         while (pos < text.size()) {
@@ -580,6 +593,8 @@ void WeChatChannel::reply(const std::string& text) {
                 size_t nl = text.rfind('\n', end);
                 if (nl != std::string::npos && nl > pos) end = nl + 1;
             }
+            // 确保 end 在 UTF-8 字符边界上，避免多字节字符被截断
+            end = adjust_to_utf8_boundary(text, pos, end);
             std::string chunk = text.substr(pos, end - pos);
             if (text.size() > kMaxChunk) {
                 chunk = "[" + std::to_string(part++) + "] " + chunk;

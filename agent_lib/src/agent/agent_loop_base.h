@@ -25,6 +25,7 @@
 #include <util/u8str_utils.h>
 #include <util/log.h>
 #include <agent/agent_config.h>
+#include "token_usage_accumulator.h"
 
 #include <functional>
 #include <atomic>
@@ -46,7 +47,8 @@ public:
                   IMcpManager& mcps,
                   IMemory& memory,
                   const PersonalityDocs& personality,
-                  InnerLoopConfig config);
+                  InnerLoopConfig config,
+                  TokenUsageAccumulator* token_accumulator = nullptr);
 
     ~AgentLoopBase() override = default;
 
@@ -81,6 +83,10 @@ protected:
     // 提取为基类方法，消除 ReactLoop 和 PlanExecuteLoop 中的重复代码
     nlohmann::json build_combined_tools_schema() const;
 
+    // 记录一次 LLM 调用的 token 用量到会话级累加器
+    // 在各 Loop 的 send_request 返回后调用；无 usage 或出错时跳过
+    void record_token_usage(const LlmResponse& response);
+
     // ========== 共享成员 ==========
     LlmProviderPtr                llm_provider_;
     UserConfirmHandlerPtr         confirm_handler_;
@@ -91,6 +97,7 @@ protected:
     IMemory&                      memory_;
     const PersonalityDocs&        personality_docs_;
     InnerLoopConfig               config_;
+    TokenUsageAccumulator*        token_accumulator_ = nullptr;  // 会话级 token 统计
 
     // 状态
     std::atomic<AgentState>       state_{AgentState::Idle};

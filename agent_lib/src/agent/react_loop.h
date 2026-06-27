@@ -30,7 +30,8 @@ public:
               IMcpManager& mcps,
               IMemory& memory,
               const PersonalityDocs& personality,
-              ReactLoopConfig config = {});
+              ReactLoopConfig config = {},
+              TokenUsageAccumulator* token_accumulator = nullptr);
 
     ~ReactLoop() override;
 

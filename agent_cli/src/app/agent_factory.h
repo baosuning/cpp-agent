@@ -22,9 +22,11 @@ struct AgentCreateResult {
 // api_key_env: LLM_API_KEY 环境变量值
 // mode_override: 非空时覆盖配置文件的 agent_mode
 // debug_override: true 时强制开启 debug
+// channel_mode: true 表示运行在 channel 模式（无 stdin 交互），使用自动确认处理器
 AgentCreateResult create_agent(const fs::path& config_dir,
                                const char* api_key_env,
                                const std::string& mode_override = "",
-                               bool debug_override = false);
+                               bool debug_override = false,
+                               bool channel_mode = false);
 
 } // namespace agent_cli

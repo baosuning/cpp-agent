@@ -36,7 +36,7 @@ Agent::Impl::Impl(const ReactAgentConfig& config)
             ctx.llm_provider, ctx.confirm_handler,
             ctx.context_manager, ctx.prompt_builder,
             ctx.tools, ctx.mcps, ctx.memory,
-            ctx.personality, ReactLoopConfig{config}
+            ctx.personality, ReactLoopConfig{config}, ctx.token_accumulator
         );
     };
 }
@@ -79,7 +79,7 @@ Agent::Impl::Impl(const PlanExecuteAgentConfig& config)
             ctx.context_manager, ctx.prompt_builder,
             ctx.tools, ctx.mcps, ctx.memory,
             ctx.personality, loop_cfg,
-            planner, executor
+            planner, executor, ctx.token_accumulator
         );
     };
 }
@@ -112,7 +112,7 @@ Agent::Impl::Impl(const ReflectionAgentConfig& config)
             ctx.context_manager, ctx.prompt_builder,
             ctx.tools, ctx.mcps, ctx.memory,
             ctx.personality, ReflectionLoopConfig{config},
-            critic
+            critic, ctx.token_accumulator
         );
     };
 }
@@ -180,6 +180,10 @@ void Agent::Impl::init_components(const AgentConfig& config)
                 for (auto& [name, server_config] : mcp_config["mcpServers"].items()) {
                     try {
                         auto mcp_cfg = mcp::McpClientConfig::from_json(server_config, name);
+                        // 配置中存在未设置的环境变量占位符时静默跳过，不输出任何日志
+                        if (mcp_cfg.skip) {
+                            continue;
+                        }
                         auto mcp_client = std::make_shared<mcp::McpClient>(mcp_cfg);
                         if (mcp_client->connect()) {
                             mcps_->register_mcp(mcp_client);
@@ -289,13 +293,17 @@ void Agent::Impl::process_loop()
         // 使用 agent_loop_factory_ 创建 Loop
         AgentLoopContext ctx{
             *context_, *prompt_builder_, *tools_, *mcps_, *memory_, personality_docs_,
-            llm_provider_, confirm_handler_
+            llm_provider_, confirm_handler_, &token_accumulator_
         };
 
         try {
             current_loop_ = agent_loop_factory_(ctx);
         } catch (const std::exception& e) {
             AGENT_LOG_ERROR("Agent") << "agent_loop_factory threw: " << e.what();
+            // 必须触发 Error 状态，否则等待 Idle 的调用方（如 Channel）会永久阻塞
+            if (on_state_change_) on_state_change_(AgentState::Error);
+            std::string err = "[Error] agent_loop_factory threw: " + std::string(e.what());
+            if (on_output_ready_) on_output_ready_(u8str(err.begin(), err.end()));
             continue;
         }
 
@@ -334,8 +342,12 @@ void Agent::Impl::process_loop()
             if (on_output_ready_) on_output_ready_(error_msg);
         }
 
-        // 上下文压缩
-        context_->compress();
+        // 上下文压缩（异常不能让 worker 线程死亡，否则后续 submit_input 永远不会被处理）
+        try {
+            context_->compress();
+        } catch (const std::exception& e) {
+            AGENT_LOG_ERROR("Agent") << "context compress failed: " << e.what();
+        }
 
         // 自动继续逻辑
         last_was_auto = false;
@@ -429,6 +441,14 @@ std::optional<PlanExecutionLog> Agent::Impl::get_execution_log() const {
         return loop->get_execution_log();
     }
     return std::nullopt;
+}
+
+TokenUsageStats Agent::Impl::get_token_stats() const {
+    return token_accumulator_.snapshot();
+}
+
+void Agent::Impl::reset_token_stats() {
+    token_accumulator_.reset();
 }
 
 // ========== 组件查询 ==========
@@ -536,6 +556,8 @@ AgentState Agent::get_state() const { return pimpl_->get_state(); }
 
 std::optional<Plan> Agent::get_plan() const { return pimpl_->get_plan(); }
 std::optional<PlanExecutionLog> Agent::get_execution_log() const { return pimpl_->get_execution_log(); }
+TokenUsageStats Agent::get_token_stats() const { return pimpl_->get_token_stats(); }
+void Agent::reset_token_stats() { pimpl_->reset_token_stats(); }
 
 LlmProviderPtr Agent::get_llm_provider() const { return pimpl_->get_llm_provider(); }
 UserConfirmHandlerPtr Agent::get_confirm_handler() const { return pimpl_->get_confirm_handler(); }

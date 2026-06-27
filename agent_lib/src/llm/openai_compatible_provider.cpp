@@ -139,6 +139,16 @@ LlmResponse OpenAICompatibleProvider::parse_response_json(const nlohmann::json& 
         result.error_message = u8str_util::to_u8str(msg);
     }
 
+    // 提取 usage 字段（OpenAI 协议：prompt_tokens / completion_tokens / total_tokens）
+    if (!result.is_error && response.contains("usage") && response["usage"].is_object()) {
+        TokenUsage usage;
+        usage.prompt_tokens     = response["usage"].value("prompt_tokens", 0);
+        usage.completion_tokens = response["usage"].value("completion_tokens", 0);
+        // 统一使用 prompt + completion 作为 total，避免不同 API 的 total 口径不一致
+        usage.total_tokens      = usage.prompt_tokens + usage.completion_tokens;
+        result.usage = usage;
+    }
+
     return result;
 }
 
@@ -184,7 +194,8 @@ LlmResponse OpenAICompatibleProvider::send_request(const LlmRequest& request) {
 
         if (http_resp.status_code != 200) {
             result.is_error = true;
-            std::string msg = "[HTTP " + std::to_string(http_resp.status_code) + "] " + http_resp.body;
+            std::string clean_body = llm::sanitize_utf8_string(http_resp.body);
+            std::string msg = "[HTTP " + std::to_string(http_resp.status_code) + "] " + clean_body;
             result.error_message = u8str_util::to_u8str(msg);
             return result;
         }

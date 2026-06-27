@@ -25,6 +25,8 @@ struct McpClientConfig {
 
     int                                timeout_ms = 30000;
     bool                               debug = false;
+    // 配置中存在未设置的环境变量占位符时置为 true，调用方应静默跳过该 MCP
+    bool                               skip = false;
 
     static McpClientConfig             from_json(const nlohmann::json& j, const std::string& client_name);
 };

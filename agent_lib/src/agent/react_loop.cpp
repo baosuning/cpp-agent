@@ -22,11 +22,12 @@ ReactLoop::ReactLoop(LlmProviderPtr llm_provider,
                      IMcpManager& mcps,
                      IMemory& memory,
                      const PersonalityDocs& personality,
-                     ReactLoopConfig config)
+                     ReactLoopConfig config,
+                     TokenUsageAccumulator* token_accumulator)
     : AgentLoopBase(std::move(llm_provider),
       std::move(confirm_handler),
       context, prompt_builder, tools, mcps, memory,
-      personality, static_cast<InnerLoopConfig>(config)) {}
+      personality, static_cast<InnerLoopConfig>(config), token_accumulator) {}
 
 ReactLoop::~ReactLoop() = default;
 
@@ -103,6 +104,8 @@ void ReactLoop::run(const u8str& user_input) {
                     emit_error(u8str_util::to_u8str(std::string("[LLM Call Error] step=") + std::to_string(step)));
                     return;
                 }
+
+                record_token_usage(response);
 
                 if (response.is_error) {
                     AGENT_LOG_ERROR("ReAct") << "LLM error: " << u8str_util::to_string(response.error_message);

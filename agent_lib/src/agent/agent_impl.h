@@ -4,6 +4,7 @@
 #include <agent/i_agent_loop.h>
 #include <agent/i_tool.h>
 #include <agent/personality.h>
+#include "token_usage_accumulator.h"
 #include <thread>
 #include <mutex>
 #include <condition_variable>
@@ -32,6 +33,10 @@ public:
     // 模式相关查询
     std::optional<Plan>              get_plan() const;
     std::optional<PlanExecutionLog>  get_execution_log() const;
+
+    // Token 使用统计
+    TokenUsageStats                 get_token_stats() const;
+    void                            reset_token_stats();
 
     // 组件查询
     LlmProviderPtr              get_llm_provider() const;
@@ -72,6 +77,9 @@ private:
     LlmProviderPtr                      critic_llm_;
 
     std::shared_ptr<IAgentLoop>         current_loop_;
+
+    // 会话级 token 使用量累加器（跨多轮对话持久，loop 每次重建不影响）
+    TokenUsageAccumulator              token_accumulator_;
 
     std::atomic<bool>                   running_{false};
     std::queue<u8str>                   input_queue_;

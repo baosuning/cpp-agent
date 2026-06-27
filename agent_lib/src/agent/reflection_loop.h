@@ -38,7 +38,8 @@ public:
                    IMemory& memory,
                    const PersonalityDocs& personality,
                    ReflectionLoopConfig config = {},
-                   LlmProviderPtr critic_llm = nullptr);
+                   LlmProviderPtr critic_llm = nullptr,
+                   TokenUsageAccumulator* token_accumulator = nullptr);
 
     ~ReflectionLoop() override;
 

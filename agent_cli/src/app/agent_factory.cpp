@@ -2,6 +2,7 @@
 // Agent 工厂实现：从 agent.md 配置创建 Agent
 
 #include "agent_factory.h"
+#include "auto_confirm_handler.h"
 #include "utils/utils.h"
 #include "web_search/web_search_impl.h"
 #include "tools/echo_tool.h"
@@ -18,7 +19,8 @@ namespace agent_cli {
 AgentCreateResult create_agent(const fs::path& config_dir,
                                const char* api_key_env,
                                const std::string& mode_override,
-                               bool debug_override) {
+                               bool debug_override,
+                               bool channel_mode) {
     AgentCreateResult result;
 
     // 解析 agent.md 配置
@@ -128,6 +130,12 @@ AgentCreateResult create_agent(const fs::path& config_dir,
 
     // ========== Memory ==========
     agent_config.memory = std::make_shared<SimpleMemory>();
+
+    // ========== Confirm Handler ==========
+    // channel 模式没有 stdin 交互，必须使用自动确认，否则需要确认的工具会永久阻塞
+    if (channel_mode) {
+        agent_config.confirm_handler = std::make_shared<AutoConfirmHandler>();
+    }
 
     // ========== Personality ==========
     agent::PersonalityDocs& personality = agent_config.personality;

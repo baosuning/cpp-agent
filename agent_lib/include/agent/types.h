@@ -6,6 +6,7 @@
 #include <optional>
 #include <chrono>
 #include <variant>
+#include <cstdint>
 #include <nlohmann/json.hpp>
 
 namespace agent {
@@ -148,12 +149,28 @@ struct LlmRequest {
     nlohmann::json        tools = nlohmann::json::array();  // 工具定义（OpenAI-compatible format）
 };
 
+// 单次 LLM 调用的 token 用量（来自 API 响应的 usage 字段）
+struct TokenUsage {
+    int64_t  prompt_tokens      = 0;  // 输入 token 数
+    int64_t  completion_tokens  = 0;  // 输出 token 数
+    int64_t  total_tokens       = 0;  // 总 token 数（部分 API 不返回，则为 0）
+};
+
+// 会话级累计 token 统计快照（可拷贝，用于返回给外部）
+struct TokenUsageStats {
+    int64_t  total_prompt_tokens      = 0;  // 累计输入 token
+    int64_t  total_completion_tokens  = 0;  // 累计输出 token
+    int64_t  total_tokens             = 0;  // 累计总 token
+    int64_t  llm_call_count           = 0;  // LLM 调用次数
+};
+
 struct LlmResponse {
-    u8str                  content;           // 回复内容
-    std::vector<ToolCall>  tool_calls;        // 工具调用请求（如果有）
-    bool                   is_error = false;  // 是否出错
-    u8str                  error_message;     // 错误信息
-    std::optional<u8str>   thinking_content;  // 思考内容（如Claude的thinking）
+    u8str                        content;           // 回复内容
+    std::vector<ToolCall>        tool_calls;        // 工具调用请求（如果有）
+    bool                         is_error = false;  // 是否出错
+    u8str                        error_message;     // 错误信息
+    std::optional<u8str>         thinking_content;  // 思考内容（如Claude的thinking）
+    std::optional<TokenUsage>    usage;             // 本次调用的 token 用量（若 API 返回）
 };
 
 struct ConfirmRequest {

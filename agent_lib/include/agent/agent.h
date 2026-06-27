@@ -46,6 +46,10 @@ public:
     std::optional<Plan>              get_plan() const;
     std::optional<PlanExecutionLog>  get_execution_log() const;
 
+    // Token 使用统计（会话级累计，跨多轮对话）
+    TokenUsageStats                  get_token_stats() const;
+    void                             reset_token_stats();
+
     // 组件查询
     LlmProviderPtr              get_llm_provider() const;
     UserConfirmHandlerPtr       get_confirm_handler() const;

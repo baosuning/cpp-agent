@@ -33,7 +33,8 @@ public:
                     const PersonalityDocs& personality,
                     PlanExecuteLoopConfig config = {},
                     LlmProviderPtr planner_llm = nullptr,
-                    LlmProviderPtr executor_llm = nullptr);
+                    LlmProviderPtr executor_llm = nullptr,
+                    TokenUsageAccumulator* token_accumulator = nullptr);
 
     ~PlanExecuteLoop() override;
 

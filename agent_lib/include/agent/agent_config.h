@@ -16,6 +16,10 @@
 
 namespace agent {
 
+// 前向声明：TokenUsageAccumulator 是内部实现（定义在 src/agent/token_usage_accumulator.h）
+// 公开头文件只持有指针，不需要完整定义
+struct TokenUsageAccumulator;
+
 // Agent 运行模式
 enum class AgentMode {
     ReAct,           // Reasoning + Acting 交替循环（默认）
@@ -74,6 +78,7 @@ struct AgentLoopContext {
     const PersonalityDocs&          personality;
     LlmProviderPtr                  llm_provider;
     UserConfirmHandlerPtr           confirm_handler;
+    TokenUsageAccumulator*          token_accumulator = nullptr;  // 会话级 token 统计累加器
 };
 
 // 自定义 AgentLoop 工厂函数类型

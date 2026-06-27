@@ -15,7 +15,8 @@ AgentLoopBase::AgentLoopBase(LlmProviderPtr llm_provider,
                               IMcpManager& mcps,
                               IMemory& memory,
                               const PersonalityDocs& personality,
-                              InnerLoopConfig config)
+                              InnerLoopConfig config,
+                              TokenUsageAccumulator* token_accumulator)
     : llm_provider_(std::move(llm_provider))
     , confirm_handler_(std::move(confirm_handler))
     , context_(context)
@@ -24,7 +25,8 @@ AgentLoopBase::AgentLoopBase(LlmProviderPtr llm_provider,
     , mcps_(mcps)
     , memory_(memory)
     , personality_docs_(personality)
-    , config_(std::move(config)) {}
+    , config_(std::move(config))
+    , token_accumulator_(token_accumulator) {}
 
 AgentState AgentLoopBase::get_state() const {
     return state_.load();
@@ -115,6 +117,11 @@ void AgentLoopBase::reset_loop_state() {
             pending_inputs_.pop();
         }
     }
+}
+
+void AgentLoopBase::record_token_usage(const LlmResponse& response) {
+    if (!token_accumulator_ || !response.usage || response.is_error) return;
+    token_accumulator_->accumulate(*response.usage);
 }
 
 nlohmann::json AgentLoopBase::build_combined_tools_schema() const {

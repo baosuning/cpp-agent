@@ -127,6 +127,13 @@ public:
             DWORD resolve_timeout = 30000;
             WinHttpSetOption(session_, WINHTTP_OPTION_RESOLVE_TIMEOUT,
                             &resolve_timeout, sizeof(resolve_timeout));
+            // 提高单服务器最大并发连接数（默认仅 2），避免长轮询占用连接后
+            // sendmessage/sendtyping 等快速请求被阻塞
+            DWORD max_conns = 8;
+            WinHttpSetOption(session_, WINHTTP_OPTION_MAX_CONNS_PER_SERVER,
+                            &max_conns, sizeof(max_conns));
+            WinHttpSetOption(session_, WINHTTP_OPTION_MAX_CONNS_PER_1_0_SERVER,
+                            &max_conns, sizeof(max_conns));
         }
     }
 

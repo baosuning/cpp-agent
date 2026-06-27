@@ -17,7 +17,8 @@ namespace agent_cli::channels::wechat {
 // iLink 客户端配置
 struct IlinkConfig {
     std::string base_url              = "https://ilinkai.weixin.qq.com";
-    int         longpoll_http_timeout_ms = 40000;  // HTTP 超时，略大于服务端 35s
+    int         longpoll_http_timeout_ms = 40000;  // 长轮询 HTTP 超时，略大于服务端 35s
+    int         quick_http_timeout_ms    = 10000;  // 快速请求（sendmessage/sendtyping/getconfig）超时
     int         qrcode_poll_interval_ms  = 1000;   // 扫码状态轮询间隔
     int         qrcode_poll_timeout_ms   = 120000; // 扫码总超时 2 分钟
     std::string channel_version          = "1.0.2";

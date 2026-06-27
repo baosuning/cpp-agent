@@ -52,7 +52,7 @@ static int run_channel_mode(const std::string& platform,
 
     // 创建 Agent（复用 agent_factory）
     AGENT_LOG_INFO("Main") << "[1/4] Creating Agent via agent_factory...";
-    auto build = agent_cli::create_agent(config_dir, api_key_env, mode_str, debug);
+    auto build = agent_cli::create_agent(config_dir, api_key_env, mode_str, debug, true);
     if (!build.agent) {
         AGENT_LOG_ERROR("Main") << "Failed to create agent";
         return 1;
@@ -110,10 +110,24 @@ static int run_channel_mode(const std::string& platform,
 
     AGENT_LOG_INFO("Main") << "========== Channel Mode Stopping ==========";
     std::cout << "\nStopping...\n";
+
     channel->stop();
     AGENT_LOG_INFO("Main") << "Channel stopped (platform=" << platform << ")";
     build.agent->stop();
     AGENT_LOG_INFO("Main") << "Agent engine stopped";
+
+    // 打印 token 使用统计（必须在 channel->stop() 和 agent->stop() 之后，
+    // 确保所有飞行中的 LLM 调用已结束，统计完整）
+    {
+        auto stats = build.agent->get_token_stats();
+        std::cout << "\n--- Token Usage (cumulative) ---" << std::endl;
+        std::cout << "  Prompt:     " << stats.total_prompt_tokens << std::endl;
+        std::cout << "  Completion: " << stats.total_completion_tokens << std::endl;
+        std::cout << "  Total:      " << stats.total_tokens << std::endl;
+        std::cout << "  LLM calls:  " << stats.llm_call_count << std::endl;
+        std::cout << "--------------------------------" << std::endl;
+    }
+
     std::cout << "Agent stopped.\n";
     return 0;
 }
@@ -337,6 +351,17 @@ int main() {
                             }
                             std::cout << "=========================" << std::endl;
                         }
+                    }
+
+                    // Token 使用统计（默认显示，不限 debug 模式）
+                    {
+                        auto stats = agent_ptr->get_token_stats();
+                        std::cout << "\n--- Token Usage (cumulative) ---" << std::endl;
+                        std::cout << "  Prompt:     " << stats.total_prompt_tokens << std::endl;
+                        std::cout << "  Completion: " << stats.total_completion_tokens << std::endl;
+                        std::cout << "  Total:      " << stats.total_tokens << std::endl;
+                        std::cout << "  LLM calls:  " << stats.llm_call_count << std::endl;
+                        std::cout << "--------------------------------" << std::endl;
                     }
                 }
                 agent_done = true;

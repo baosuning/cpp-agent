@@ -2,6 +2,7 @@
 // iLink Bot API 协议封装实现
 
 #include "ilink_client.h"
+#include <util/utf8_utils.h>
 #include <nlohmann/json.hpp>
 #include <chrono>
 #include <thread>
@@ -60,7 +61,8 @@ std::optional<nlohmann::json> IlinkClient::http_get(
         return std::nullopt;
     }
     try {
-        return json::parse(resp.body);
+        std::string clean_body = agent::llm::sanitize_utf8_string(resp.body);
+        return json::parse(clean_body);
     } catch (const std::exception& e) {
         AGENT_LOG_ERROR("IlinkClient") << "GET " << path_and_query
             << " JSON parse failed: " << e.what();
@@ -82,7 +84,8 @@ std::optional<nlohmann::json> IlinkClient::http_post(
         return std::nullopt;
     }
     try {
-        return json::parse(resp.body);
+        std::string clean_body = agent::llm::sanitize_utf8_string(resp.body);
+        return json::parse(clean_body);
     } catch (const std::exception& e) {
         AGENT_LOG_ERROR("IlinkClient") << "POST " << path
             << " JSON parse failed: " << e.what();
@@ -244,7 +247,7 @@ bool IlinkClient::send_text(const std::string& to_user_id,
     body["msg"] = std::move(msg);
 
     auto result = http_post("/ilink/bot/sendmessage", body, build_auth_headers(),
-                            config_.longpoll_http_timeout_ms);
+                            config_.quick_http_timeout_ms);
     if (!result) return false;
 
     // iLink sendmessage 成功投递后可能返回空对象 {} 或不包含 ret 字段，
@@ -268,7 +271,7 @@ std::optional<std::string> IlinkClient::get_typing_ticket() {
     body["base_info"] = {{"channel_version", config_.channel_version}};
     body["ilink_user_id"] = ilink_user_id_;
     auto result = http_post("/ilink/bot/getconfig", body, build_auth_headers(),
-                            config_.longpoll_http_timeout_ms);
+                            config_.quick_http_timeout_ms);
     if (!result) return std::nullopt;
 
     int ret = result->value("ret", -1);
@@ -304,7 +307,7 @@ bool IlinkClient::send_typing(const std::string& context_token,
     body["status"] = status;  // 1 = 开始输入, 2 = 结束输入
 
     auto result = http_post("/ilink/bot/sendtyping", body, build_auth_headers(),
-                            config_.longpoll_http_timeout_ms);
+                            config_.quick_http_timeout_ms);
     if (!result) return false;
 
     int ret = result->value("ret", -1);

@@ -180,6 +180,15 @@ LlmResponse ClaudeProvider::parse_response(const nlohmann::json& response) const
         result.error_message = u8str(msg.begin(), msg.end());
     }
 
+    // 提取 usage 字段（Anthropic 协议：input_tokens / output_tokens）
+    if (!result.is_error && response.contains("usage") && response["usage"].is_object()) {
+        TokenUsage usage;
+        usage.prompt_tokens     = response["usage"].value("input_tokens", 0);
+        usage.completion_tokens = response["usage"].value("output_tokens", 0);
+        usage.total_tokens      = usage.prompt_tokens + usage.completion_tokens;
+        result.usage = usage;
+    }
+
     return result;
 }
 
@@ -217,7 +226,7 @@ LlmResponse ClaudeProvider::send_request(const LlmRequest& request) {
             result.is_error = true;
             std::string msg = "HTTP error: " + std::to_string(http_resp.status_code);
             if (!http_resp.body.empty()) {
-                msg += " - " + http_resp.body;
+                msg += " - " + agent::llm::sanitize_utf8_string(http_resp.body);
             }
             result.error_message = u8str(msg.begin(), msg.end());
             return result;

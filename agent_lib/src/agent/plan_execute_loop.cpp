@@ -33,11 +33,12 @@ PlanExecuteLoop::PlanExecuteLoop(LlmProviderPtr llm_provider,
                                  const PersonalityDocs& personality,
                                  PlanExecuteLoopConfig config,
                                  LlmProviderPtr planner_llm,
-                                 LlmProviderPtr executor_llm)
+                                 LlmProviderPtr executor_llm,
+                                 TokenUsageAccumulator* token_accumulator)
     : AgentLoopBase(llm_provider,
                     std::move(confirm_handler),
                     context, prompt_builder, tools, mcps, memory,
-                    personality, static_cast<InnerLoopConfig>(config))
+                    personality, static_cast<InnerLoopConfig>(config), token_accumulator)
     , current_plan_{}
     , current_step_index_{-1}
     , paused_for_user_input_{false}
@@ -1286,17 +1287,18 @@ std::optional<PlanExecutionLog> PlanExecuteLoop::get_execution_log() const {
 }
 
 LlmResponse PlanExecuteLoop::call_llm_for_plan(const LlmRequest& request) {
-    if (planner_llm_) {
-        return planner_llm_->send_request(request);
-    }
-    return llm_provider_->send_request(request);
+    // 使用初始化语法而非先默认构造再赋值，便于编译器 NRVO 优化
+    LlmResponse response = planner_llm_ ? planner_llm_->send_request(request)
+                                        : llm_provider_->send_request(request);
+    record_token_usage(response);
+    return response;
 }
 
 LlmResponse PlanExecuteLoop::call_llm_for_execute(const LlmRequest& request) {
-    if (executor_llm_) {
-        return executor_llm_->send_request(request);
-    }
-    return llm_provider_->send_request(request);
+    LlmResponse response = executor_llm_ ? executor_llm_->send_request(request)
+                                         : llm_provider_->send_request(request);
+    record_token_usage(response);
+    return response;
 }
 
 ToolResult PlanExecuteLoop::execute_tool(const ToolCall& tool_call) {

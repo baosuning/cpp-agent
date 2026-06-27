@@ -2187,6 +2187,154 @@ void test_reflection_create_reflection_factory() {
     test_pass("stop() completes without error");
 }
 
+// ============================================================
+// Test: Token 使用统计
+// ============================================================
+
+void test_token_usage_stats() {
+    test_header("Token Usage Stats");
+
+    auto mock_llm = std::make_shared<MockLlmProvider>();
+
+    // 第 1 次响应：带 usage 的工具调用
+    {
+        agent::LlmResponse resp1;
+        resp1.content = strtou8("调用工具");
+        agent::ToolCall tc;
+        tc.id = strtou8("call_1");
+        tc.name = strtou8("echo");
+        tc.arguments = strtou8(R"({"text":"hello"})");
+        resp1.tool_calls.push_back(std::move(tc));
+        resp1.usage = agent::TokenUsage{100, 50, 150};
+        mock_llm->responses.push_back(std::move(resp1));
+    }
+
+    // 第 2 次响应：带 usage 的纯文本回答
+    {
+        agent::LlmResponse resp2;
+        resp2.content = strtou8("最终回答");
+        resp2.usage = agent::TokenUsage{200, 80, 280};
+        mock_llm->responses.push_back(std::move(resp2));
+    }
+
+    agent::ReactAgentConfig config;
+    config.llm_provider = mock_llm;
+    config.memory = std::make_shared<TestMemory>();
+    config.auto_confirm = true;
+    config.max_steps = 10;
+    config.enable_thinking = true;
+
+    auto tool_registry = agent::create_tool_registry();
+    tool_registry->register_tool(std::make_shared<EchoTool>());
+    config.tool_registry = tool_registry;
+
+    auto agent_ptr = agent::Agent::create_react(config);
+
+    agent_ptr->start();
+    agent_ptr->submit_input(strtou8("测试 token 统计"));
+
+    // 等待完成
+    for (int i = 0; i < 50; ++i) {
+        if (agent_ptr->get_state() == agent::AgentState::Completed) break;
+        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(200));
+
+    // 验证 1：token 统计正确累计（2 次调用）
+    {
+        auto stats = agent_ptr->get_token_stats();
+        if (stats.llm_call_count == 2)
+            test_pass("LLM call count = 2");
+        else
+            test_fail("LLM call count: expected 2, got " + std::to_string(stats.llm_call_count));
+
+        if (stats.total_prompt_tokens == 300)
+            test_pass("Total prompt tokens = 300 (100 + 200)");
+        else
+            test_fail("Total prompt tokens: expected 300, got " + std::to_string(stats.total_prompt_tokens));
+
+        if (stats.total_completion_tokens == 130)
+            test_pass("Total completion tokens = 130 (50 + 80)");
+        else
+            test_fail("Total completion tokens: expected 130, got " + std::to_string(stats.total_completion_tokens));
+
+        if (stats.total_tokens == 430)
+            test_pass("Total tokens = 430 (150 + 280)");
+        else
+            test_fail("Total tokens: expected 430, got " + std::to_string(stats.total_tokens));
+    }
+
+    agent_ptr->stop();
+
+    // 验证 2：reset 后统计清零
+    agent_ptr->reset_token_stats();
+    {
+        auto stats = agent_ptr->get_token_stats();
+        if (stats.llm_call_count == 0 && stats.total_tokens == 0)
+            test_pass("reset_token_stats() clears all counters");
+        else
+            test_fail("reset failed: call_count=" + std::to_string(stats.llm_call_count)
+                      + " total_tokens=" + std::to_string(stats.total_tokens));
+    }
+}
+
+// ============================================================
+// Test: Token 统计跳过 error 响应
+// ============================================================
+
+void test_token_usage_skips_error() {
+    test_header("Token Usage Skips Error Response");
+
+    auto mock_llm = std::make_shared<MockLlmProvider>();
+
+    // 唯一响应：error 响应（带 usage 但 is_error=true，不应累计）
+    // ReAct loop 收到 error 后会直接 emit_error 并退出，不会消费更多响应
+    {
+        agent::LlmResponse resp1;
+        resp1.content = strtou8("");
+        resp1.is_error = true;
+        resp1.error_message = strtou8("API error");
+        resp1.usage = agent::TokenUsage{999, 999, 999};
+        mock_llm->responses.push_back(std::move(resp1));
+    }
+
+    agent::ReactAgentConfig config;
+    config.llm_provider = mock_llm;
+    config.memory = std::make_shared<TestMemory>();
+    config.auto_confirm = true;
+    config.max_steps = 10;
+
+    auto tool_registry = agent::create_tool_registry();
+    config.tool_registry = tool_registry;
+
+    auto agent_ptr = agent::Agent::create_react(config);
+    agent_ptr->start();
+    agent_ptr->submit_input(strtou8("测试 error 跳过"));
+
+    for (int i = 0; i < 50; ++i) {
+        if (agent_ptr->get_state() == agent::AgentState::Completed ||
+            agent_ptr->get_state() == agent::AgentState::Error) break;
+        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(200));
+
+    // 验证：error 响应的 usage 不被累计（即使 response 中包含了 usage 字段）
+    {
+        auto stats = agent_ptr->get_token_stats();
+        if (stats.llm_call_count == 0)
+            test_pass("Error response not counted (call_count=0)");
+        else
+            test_fail("call_count: expected 0 (error skipped), got " + std::to_string(stats.llm_call_count));
+
+        if (stats.total_tokens == 0)
+            test_pass("Error usage not accumulated (total=0)");
+        else
+            test_fail("total_tokens: expected 0 (error skipped), got " + std::to_string(stats.total_tokens));
+    }
+
+    agent_ptr->stop();
+}
+
 int main() {
 #ifdef _WIN32
     SetConsoleOutputCP(CP_UTF8);
@@ -2225,6 +2373,8 @@ int main() {
     test_reflection_create_reflection_factory();
     test_full_agent_run();
     test_dangerous_tool_confirmation();
+    test_token_usage_stats();
+    test_token_usage_skips_error();
 
     std::cout << "\n========================================\n";
     std::cout << "  Results: " << pass_count << " / " << test_count << " passed\n";

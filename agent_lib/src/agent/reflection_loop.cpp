@@ -23,11 +23,12 @@ ReflectionLoop::ReflectionLoop(LlmProviderPtr llm_provider,
                                IMemory& memory,
                                const PersonalityDocs& personality,
                                ReflectionLoopConfig config,
-                               LlmProviderPtr critic_llm)
+                               LlmProviderPtr critic_llm,
+                               TokenUsageAccumulator* token_accumulator)
     : AgentLoopBase(std::move(llm_provider),
       std::move(confirm_handler),
       context, prompt_builder, tools, mcps, memory,
-      personality, static_cast<InnerLoopConfig>(config))
+      personality, static_cast<InnerLoopConfig>(config), token_accumulator)
     , ref_config_(std::move(config))
     , critic_llm_(critic_llm ? std::move(critic_llm) : llm_provider_)
 {
@@ -227,6 +228,8 @@ u8str ReflectionLoop::generate_answer(const u8str& system_prompt,
             return last_content; // 返回已有的内容
         }
 
+        record_token_usage(response);
+
         if (response.is_error) {
             AGENT_LOG_ERROR("Reflection") << "Generate LLM error: "
                 << u8str_util::to_string(response.error_message);
@@ -304,6 +307,8 @@ CritiqueResult ReflectionLoop::critique(const u8str& user_query, const u8str& an
             break; // 两次都失败，退出循环进入 self-critique 回退
         }
 
+        record_token_usage(response);
+
         if (!response.is_error) {
             return parse_critique_response(response.content);
         }
@@ -327,6 +332,7 @@ CritiqueResult ReflectionLoop::critique(const u8str& user_query, const u8str& an
 
     try {
         LlmResponse self_response = llm_provider_->send_request(self_request);
+        record_token_usage(self_response);
         if (!self_response.is_error) {
             AGENT_LOG_INFO("Reflection") << "Self-critique completed successfully";
             return parse_critique_response(self_response.content);

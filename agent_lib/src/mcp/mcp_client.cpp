@@ -15,7 +15,8 @@ namespace mcp {
 namespace {
 
 // 展开字符串中的 ${VAR} 环境变量占位符
-std::string expand_env_vars(const std::string& input) {
+// has_unresolved 输出参数：若存在未设置的环境变量，置为 true
+std::string expand_env_vars(const std::string& input, bool* has_unresolved = nullptr) {
     static const std::regex env_regex(R"(\$\{([^}]+)\})");
     std::string result;
     result.reserve(input.size());
@@ -29,6 +30,8 @@ std::string expand_env_vars(const std::string& input) {
         const char* env_val = std::getenv((*it)[1].str().c_str());
         if (env_val) {
             result.append(env_val);
+        } else if (has_unresolved) {
+            *has_unresolved = true;
         }
         last_pos = it->position() + it->length();
     }
@@ -46,23 +49,31 @@ McpClientConfig McpClientConfig::from_json(const nlohmann::json& j, const std::s
         cfg.description = j["description"].get<std::string>();
     }
 
+    // 跟踪是否存在未设置的环境变量占位符，若存在则标记 skip 让调用方静默跳过
+    bool has_unresolved = false;
+
     if (j.contains("url")) {
-        cfg.url = expand_env_vars(j["url"].get<std::string>());
+        cfg.url = expand_env_vars(j["url"].get<std::string>(), &has_unresolved);
     } else if (j.contains("command")) {
-        cfg.command = expand_env_vars(j["command"].get<std::string>());
+        cfg.command = expand_env_vars(j["command"].get<std::string>(), &has_unresolved);
         if (j.contains("args") && j["args"].is_array()) {
             for (const auto& arg : j["args"]) {
-                cfg.args.push_back(expand_env_vars(arg.get<std::string>()));
+                cfg.args.push_back(expand_env_vars(arg.get<std::string>(), &has_unresolved));
             }
         }
         if (j.contains("env") && j["env"].is_object()) {
             for (auto it = j["env"].begin(); it != j["env"].end(); ++it) {
-                cfg.env[it.key()] = expand_env_vars(it.value().get<std::string>());
+                cfg.env[it.key()] = expand_env_vars(it.value().get<std::string>(), &has_unresolved);
             }
         }
     } else {
         throw std::runtime_error("MCP client '" + client_name +
             "': must have either 'url' (HTTP) or 'command' (stdio) field");
+    }
+
+    if (has_unresolved) {
+        cfg.skip = true;
+        return cfg;
     }
 
     if (j.contains("timeout")) {
