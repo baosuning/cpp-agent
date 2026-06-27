@@ -6,6 +6,8 @@
 #include <util/i_http_client.h>
 #include <util/log.h>
 #include <util/base64.h>
+#include <util/crypto_utils.h>
+#include <cstdint>
 #include <string>
 #include <vector>
 #include <optional>
@@ -13,6 +15,9 @@
 #include <random>
 
 namespace agent_cli::channels::wechat {
+
+// 下载图片的最大尺寸限制（20MB），防止恶意超大图片导致内存耗尽
+constexpr size_t kMaxImageDownloadSize = 20 * 1024 * 1024;
 
 // iLink 客户端配置
 struct IlinkConfig {
@@ -40,8 +45,16 @@ struct LoginResult {
 
 // 入站消息项
 struct InboundItem {
-    int                         type = 0;   // 1=文本
-    std::optional<std::string>  text;       // type=1 时填充
+    int                         type = 0;   // 1=文本, 2=图片
+    // 文本字段（type=1）
+    std::optional<std::string>  text;
+    // 图片字段（type=2）
+    std::optional<std::string>  image_encrypt_param; // CDN 下载参数
+    std::optional<std::string>  image_aes_key;       // AES-128 密钥（hex 字符串）
+    int                         image_width  = 0;
+    int                         image_height = 0;
+    std::optional<std::string>  image_md5;
+    std::optional<std::string>  image_format;        // "jpeg", "png" 等
 };
 
 // 入站消息（用户发给 bot）
@@ -58,6 +71,13 @@ struct InboundMessage {
 struct GetUpdatesResult {
     std::vector<InboundMessage> messages;
     std::string                 new_sync_buf;  // 新游标
+};
+
+// CDN 上传地址结果
+struct UploadUrlResult {
+    std::string upload_url;     // 预签名 CDN 上传地址
+    std::string file_id;        // CDN 文件标识
+    int         expire_seconds = 0;
 };
 
 // iLink 协议客户端
@@ -99,6 +119,18 @@ public:
     bool send_typing(const std::string& context_token,
                      const std::string& typing_ticket,
                      int status);
+
+    // 获取 CDN 上传地址
+    std::optional<UploadUrlResult> get_upload_url(const std::string& content_type);
+
+    // 从 CDN 下载并解密图片，返回解密后的图片二进制数据
+    std::vector<uint8_t> download_image(const std::string& encrypt_query_param,
+                                         const std::string& aes_key_hex);
+
+    // 发送图片消息（上传到 CDN → sendmessage）
+    bool send_image(const std::string& to_user_id,
+                    const std::string& file_path,
+                    const std::string& context_token);
 
 private:
     agent::IHttpClient&   http_;

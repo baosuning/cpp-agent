@@ -25,6 +25,11 @@ public:
                              const std::map<std::string, std::string>& headers,
                              int timeout_ms = 90000) = 0;
 
+    virtual HttpResponse put(const std::string& url,
+                              const std::string& body,
+                              const std::map<std::string, std::string>& headers,
+                              int timeout_ms = 90000) = 0;
+
     virtual void set_debug(bool enable) = 0;
 };
 

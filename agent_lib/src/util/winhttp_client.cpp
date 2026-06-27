@@ -155,6 +155,12 @@ public:
         return do_request("GET", url, "", headers, timeout_ms);
     }
 
+    HttpResponse put(const std::string& url, const std::string& body,
+                     const std::map<std::string, std::string>& headers,
+                     int timeout_ms) override {
+        return do_request("PUT", url, body, headers, timeout_ms);
+    }
+
     void set_debug(bool enable) override {
         debug_ = enable;
     }
@@ -257,7 +263,7 @@ private:
                 break;
             }
         }
-        if (!has_content_type && method == "POST" && !body.empty()) {
+        if (!has_content_type && (method == "POST" || method == "PUT") && !body.empty()) {
             header_str += L"Content-Type: application/json\r\n";
         }
 
@@ -390,6 +396,12 @@ public:
         return {0, "", true, "HTTP client not implemented on this platform"};
     }
     HttpResponse get(const std::string& url,
+                     const std::map<std::string, std::string>& headers,
+                     int timeout_ms) override {
+        (void)timeout_ms;
+        return {0, "", true, "HTTP client not implemented on this platform"};
+    }
+    HttpResponse put(const std::string& url, const std::string& body,
                      const std::map<std::string, std::string>& headers,
                      int timeout_ms) override {
         (void)timeout_ms;

@@ -450,23 +450,64 @@ void WeChatChannel::process_loop() {
 }
 
 void WeChatChannel::handle_message(const InboundMessage& msg) {
-    // 只处理文本消息
+    // 处理文本和图片消息
     std::string user_text;
-    bool has_text = false;
+    std::string image_descriptions;
+    bool has_content = false;
+
     for (const auto& item : msg.items) {
         if (item.type == 1 && item.text) {
             user_text += *item.text;
-            has_text = true;
+            has_content = true;
+        } else if (item.type == 2) {
+            // 图片消息：检查是否有下载所需的字段
+            std::string desc;
+            std::string format = item.image_format.value_or("unknown");
+            bool has_download_params = item.image_encrypt_param && !item.image_encrypt_param->empty()
+                                    && item.image_aes_key && !item.image_aes_key->empty();
+            if (has_download_params) {
+                // 尝试下载并解密图片
+                try {
+                    auto img_data = client_->download_image(*item.image_encrypt_param, *item.image_aes_key);
+                    if (!img_data.empty()) {
+                        desc = "[Image: " + std::to_string(item.image_width) + "x"
+                               + std::to_string(item.image_height) + ", " + format + "]";
+                        AGENT_LOG_INFO("WeChatChannel") << "Image downloaded: " << desc;
+                    } else {
+                        desc = "[Image: " + std::to_string(item.image_width) + "x"
+                               + std::to_string(item.image_height) + ", " + format
+                               + ", md5=" + item.image_md5.value_or("?") + ", download failed]";
+                        AGENT_LOG_WARN("WeChatChannel") << "Image download failed, using fallback description";
+                    }
+                } catch (const std::exception& e) {
+                    desc = "[Image: " + std::to_string(item.image_width) + "x"
+                           + std::to_string(item.image_height) + ", " + format + "]";
+                    AGENT_LOG_ERROR("WeChatChannel") << "Image download exception: " << e.what();
+                }
+            } else {
+                // 缺少下载参数，使用降级描述
+                desc = "[Image: " + std::to_string(item.image_width) + "x"
+                       + std::to_string(item.image_height) + ", " + format
+                       + ", md5=" + item.image_md5.value_or("?") + ", no download params]";
+                AGENT_LOG_WARN("WeChatChannel") << "Image has no download params, using fallback";
+            }
+            if (!image_descriptions.empty()) image_descriptions += "\n";
+            image_descriptions += desc;
+            has_content = true;
         }
     }
-    if (!has_text) {
-        AGENT_LOG_INFO("WeChatChannel") << "Non-text message from " << msg.from_user_id << ", skipping";
-        reply("Sorry, only text messages are supported in this version.");
-        return;
+
+    // 拼接文本和图片描述
+    if (!image_descriptions.empty()) {
+        if (!user_text.empty()) {
+            user_text = image_descriptions + "\n" + user_text;
+        } else {
+            user_text = image_descriptions;
+        }
     }
 
-    if (user_text.empty()) {
-        AGENT_LOG_INFO("WeChatChannel") << "Empty text message, skipping";
+    if (!has_content || user_text.empty()) {
+        AGENT_LOG_INFO("WeChatChannel") << "No processable content from " << msg.from_user_id << ", skipping";
         return;
     }
 
