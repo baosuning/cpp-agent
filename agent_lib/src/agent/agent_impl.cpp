@@ -11,6 +11,7 @@
 #include "../llm/llm_provider_factory.h"
 #include "../skill/skill_scanner.h"
 #include "../tool/read_skill_tool.h"
+#include "../tool/load_mcp_tool.h"
 #include "../memory/default_memory.h"
 #include "react_loop.h"
 #include "plan_execute_loop.h"
@@ -199,6 +200,13 @@ void Agent::Impl::init_components(const AgentConfig& config)
         } catch (const std::exception& e) {
             AGENT_LOG_ERROR("Agent") << "Failed to parse mcp config: " << e.what();
         }
+    }
+
+    // 注册 load_mcp_tool：LLM 通过此工具按需加载 MCP 工具完整 schema
+    // 当有 MCP 服务器连接时始终注册，即使没有 MCP 工具也可注册（不会造成问题）
+    if (!mcps_->list_mcps().empty()) {
+        tools_->register_tool(std::make_shared<LoadMcpToolTool>(*mcps_));
+        AGENT_LOG_INFO("Agent") << "Registered load_mcp_tool";
     }
 
     // Skill 目录自动扫描：扫描 skill_dirs 中的目录，注册 ReadSkillTool，更新 personality

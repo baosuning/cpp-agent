@@ -124,8 +124,65 @@ void AgentLoopBase::record_token_usage(const LlmResponse& response) {
     token_accumulator_->accumulate(*response.usage);
 }
 
+void AgentLoopBase::add_active_mcp_tool(const std::string& name) {
+    active_mcp_tools_.insert(name);
+}
+
+void AgentLoopBase::clear_active_mcp_tools() {
+    active_mcp_tools_.clear();
+}
+
+// 提取描述的第一句（以 . 或换行分割），最多 max_len 字符
+static std::string extract_first_sentence(const std::string& desc, size_t max_len = 100) {
+    if (desc.empty()) return "[No description]";
+    // 找第一个句号或换行
+    auto pos = desc.find_first_of(".\n\r");
+    if (pos != std::string::npos && pos > 0 && pos < max_len) {
+        return desc.substr(0, pos + 1);
+    }
+    if (desc.size() <= max_len) return desc;
+    return desc.substr(0, max_len) + "...";
+}
+
+std::string AgentLoopBase::build_mcp_tool_index() const {
+    auto mcps = mcps_.list_mcps();
+    if (mcps.empty()) return {};
+
+    std::string index;
+    index += "## Available MCP Tools\n\n";
+    index += "You must call `load_mcp_tool` to load a tool's complete definition before using it.\n";
+    index += "Pass tool names as an array: load_mcp_tool([\"tool1\", \"tool2\"]).\n\n";
+
+    for (const auto& mcp : mcps) {
+        auto sn = mcp->name();
+        std::string server_str(sn.begin(), sn.end());
+        auto tools = mcp->list_tools();
+        if (tools.empty()) continue;
+
+        index += "### " + server_str + " (" + std::to_string(tools.size()) + " tools)\n";
+        for (const auto& tool : tools) {
+            if (!tool.contains("name")) continue;
+            std::string tool_name = tool["name"].get<std::string>();
+            std::string flat_name = server_str + "_" + tool_name;
+            std::string desc;
+            if (tool.contains("description")) {
+                desc = extract_first_sentence(tool["description"].get<std::string>());
+            } else {
+                desc = "[No description]";
+            }
+            // 标注已加载状态
+            bool loaded = active_mcp_tools_.find(flat_name) != active_mcp_tools_.end();
+            index += "- " + flat_name + (loaded ? " [LOADED]" : "") + ": " + desc + "\n";
+        }
+        index += "\n";
+    }
+
+    return index;
+}
+
 nlohmann::json AgentLoopBase::build_combined_tools_schema() const {
     nlohmann::json tools_list = tools_.get_tools_schema();
+
     auto mcps = mcps_.list_mcps();
     for (const auto& mcp : mcps) {
         auto server_name = mcp->name();
@@ -135,6 +192,12 @@ nlohmann::json AgentLoopBase::build_combined_tools_schema() const {
             if (!tool.contains("name")) continue;
             std::string tool_name = tool["name"].get<std::string>();
             std::string flat_name = server_str + "_" + tool_name;
+
+            // 按需加载：仅发送已加载的 MCP 工具
+            if (active_mcp_tools_.find(flat_name) == active_mcp_tools_.end()) {
+                continue;
+            }
+
             nlohmann::json entry;
             entry["type"] = "function";
             entry["function"]["name"] = flat_name;

@@ -35,6 +35,7 @@ void ReactLoop::run(const u8str& user_input) {
     try {
         reset_loop_state();
         last_response_had_tool_calls_ = false;
+        clear_active_mcp_tools();
         set_state(AgentState::Thinking);
 
         context_.add_user_message(prompt_builder_.build_user_prompt(user_input, personality_docs_));
@@ -48,8 +49,17 @@ void ReactLoop::run(const u8str& user_input) {
             context_.add_system_message(memory_context);
         }
 
+        // 构建 MCP 工具索引并追加到 system prompt
+        u8str base_instruction = react_instruction();
+        std::string mcp_index = build_mcp_tool_index();
+        u8str full_instruction = base_instruction;
+        if (!mcp_index.empty()) {
+            full_instruction = base_instruction + u8str(u8"\n") +
+                u8str(reinterpret_cast<const char8_t*>(mcp_index.data()), mcp_index.size());
+        }
+
         u8str system_prompt = prompt_builder_.build_system_prompt(
-            personality_docs_, react_instruction());
+            personality_docs_, full_instruction);
 
         // 预计算 tools_schema（在整个 run() 中不变）
         nlohmann::json cached_tools_schema;
@@ -234,6 +244,45 @@ void ReactLoop::run(const u8str& user_input) {
                             tool_step.tool_result = tool_result;
                             tool_step.timestamp = std::chrono::system_clock::now();
                             add_thinking_step(std::move(tool_step));
+                        }
+                    }
+
+                    // 检查是否调用了 load_mcp_tool，如果是则更新 active_mcp_tools_ 并重建 tools_schema
+                    for (const auto& tc : response.tool_calls) {
+                        std::string tc_name(tc.name.begin(), tc.name.end());
+                        if (tc_name == "load_mcp_tool") {
+                            // 解析参数，提取 tool_names 并加入 active_mcp_tools_
+                            try {
+                                std::string args_str(tc.arguments.begin(), tc.arguments.end());
+                                auto args_json = nlohmann::json::parse(args_str);
+                                if (args_json.contains("tool_names") && args_json["tool_names"].is_array()) {
+                                    for (const auto& name : args_json["tool_names"]) {
+                                        if (name.is_string()) {
+                                            add_active_mcp_tool(name.get<std::string>());
+                                        }
+                                    }
+                                }
+                            } catch (...) {
+                                // 解析失败不影响流程
+                            }
+
+                            try {
+                                cached_tools_schema = build_combined_tools_schema();
+                                // 更新 system prompt 中的 MCP 索引（标注 [LOADED] 状态）
+                                std::string new_mcp_index = build_mcp_tool_index();
+                                if (!new_mcp_index.empty()) {
+                                    system_prompt = prompt_builder_.build_system_prompt(
+                                        personality_docs_,
+                                        base_instruction + u8str(u8"\n") +
+                                            u8str(reinterpret_cast<const char8_t*>(new_mcp_index.data()),
+                                                  new_mcp_index.size()));
+                                }
+                                AGENT_LOG_DEBUG("ReAct") << "rebuilt tools_schema after load_mcp_tool, now "
+                                    << cached_tools_schema.size() << " tools";
+                            } catch (const std::exception& e) {
+                                AGENT_LOG_ERROR("ReAct") << "rebuild tools_schema failed: " << e.what();
+                            }
+                            break;
                         }
                     }
 

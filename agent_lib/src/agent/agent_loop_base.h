@@ -32,6 +32,8 @@
 #include <mutex>
 #include <optional>
 #include <queue>
+#include <set>
+#include <string>
 #include <chrono>
 #include <nlohmann/json.hpp>
 
@@ -79,9 +81,22 @@ protected:
     // 重置循环状态（在 run() 开始时调用）
     void reset_loop_state();
 
-    // 构建合并的 tools_schema（内置工具 + MCP 工具）
+    // 构建合并的 tools_schema（内置工具 + 已加载的 MCP 工具）
     // 提取为基类方法，消除 ReactLoop 和 PlanExecuteLoop 中的重复代码
     nlohmann::json build_combined_tools_schema() const;
+
+    // 按需加载 MCP 工具：将指定工具名添加到活跃集合
+    void add_active_mcp_tool(const std::string& name);
+
+    // 清空活跃 MCP 工具集合（run() 开始时调用）
+    void clear_active_mcp_tools();
+
+    // 获取活跃 MCP 工具集合的引用（供 LoadMcpToolTool 使用）
+    std::set<std::string>& get_active_mcp_tools() { return active_mcp_tools_; }
+
+    // 构建 MCP 工具索引（按服务器分组，每工具 ≤100 chars 描述）
+    // 供子类追加到 system prompt 中
+    std::string build_mcp_tool_index() const;
 
     // 记录一次 LLM 调用的 token 用量到会话级累加器
     // 在各 Loop 的 send_request 返回后调用；无 usage 或出错时跳过
@@ -117,6 +132,9 @@ protected:
     std::function<void(const u8str&)>         on_output_ready_;
     std::function<void(AgentState)>           on_state_change_;
     mutable std::mutex                        callback_mutex_;
+
+    // 按需加载 MCP 工具：已加载的工具名集合
+    mutable std::set<std::string>             active_mcp_tools_;
 };
 
 }  // namespace agent
