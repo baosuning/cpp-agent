@@ -67,6 +67,13 @@ void DefaultContextManager::compress() {
     size_t keep_count = max_messages_ * 2 / 3;
     size_t compress_count = messages_.size() - keep_count;
 
+    // 向前调整 compress_count，避免在 Tool 序列中间切断产生孤立 Tool 消息
+    // （切断点落在 Tool 消息上时，把该 Tool 也纳入压缩范围）
+    while (compress_count < messages_.size()
+           && messages_[compress_count].role == MessageRole::Tool) {
+        compress_count++;
+    }
+
     u8str summary;
     for (size_t i = 0; i < compress_count; ++i) {
         const auto& msg = messages_[i];
@@ -92,11 +99,18 @@ void DefaultContextManager::compress() {
 
             case MessageRole::Tool:
             {
-                constexpr size_t kMaxToolResultLen = 200;
+                // 摘要中工具结果截断阈值：500 字符足以保留关键信息
+                // 与在线工具结果截断（3000）协同：在线保留完整，摘要保留精简
+                constexpr size_t kMaxToolResultLen = 500;
                 u8str truncated = msg.content;
                 u8str tool_id = msg.tool_call_id.value_or(u8str(u8""));
                 if (truncated.size() > kMaxToolResultLen) {
-                    truncated = truncated.substr(0, kMaxToolResultLen) + u8str(u8"...");
+                    size_t original_len = truncated.size();
+                    std::string len_str = std::to_string(original_len);
+                    truncated = truncated.substr(0, kMaxToolResultLen)
+                              + u8str(u8"...[truncated, ")
+                              + u8str(len_str.begin(), len_str.end())
+                              + u8str(u8" chars total]");
                 }
                 summary += u8str(u8"Tool[") + tool_id + u8str(u8"]: ") + truncated + u8str(u8"\n");
                 break;
@@ -114,6 +128,8 @@ void DefaultContextManager::compress() {
     compressed.content = u8str(u8"[Earlier conversation summary:\n") + summary + u8str(u8"]");
     messages_.insert(messages_.begin(), compressed);
 
+    // 防御性清理：正常情况下上方切断点调整已避免孤立 Tool，
+    // 此循环作为最后保险，清除任何残留的开头孤立 Tool 消息
     while (messages_.size() > 1 && messages_[1].role == MessageRole::Tool) {
         messages_.erase(messages_.begin() + 1);
     }

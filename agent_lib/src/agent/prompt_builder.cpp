@@ -133,8 +133,7 @@ u8str PromptBuilder::build_system_prompt(const PersonalityDocs& personality,
               "Fall back to other search only when anysearch is unavailable.\n\n";
 
     prompt += "## System Environment\n";
-    prompt += "- OS: " + get_os_info() + "\n";
-    prompt += "- Current Date: " + get_current_date() + "\n\n";
+    prompt += "- OS: " + get_os_info() + "\n\n";
 
     if (!instruction.empty()) {
         prompt += "## Instructions\n" + u8_to_str(instruction) + "\n\n";
@@ -147,6 +146,9 @@ u8str PromptBuilder::build_user_prompt(const u8str& user_input,
                                         const PersonalityDocs& personality,
                                         const std::optional<u8str>& target_user) const {
     std::string prompt;
+
+    // 注入当前时间戳到 user message（动态内容放 user message，避免破坏 system prompt 缓存）
+    prompt += "[Current time: " + get_current_date() + "]\n";
 
     if (target_user.has_value()) {
         auto it = personality.user_profiles.find(target_user.value());
