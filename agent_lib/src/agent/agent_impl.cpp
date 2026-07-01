@@ -154,9 +154,14 @@ void Agent::Impl::init_components(const AgentConfig& config)
         ? config.prompt_builder
         : std::make_shared<PromptBuilder>();
 
-    context_ = config.context_manager
-        ? config.context_manager
-        : std::make_shared<DefaultContextManager>();
+    if (config.context_manager) {
+        context_ = config.context_manager;
+    } else {
+        // 默认上下文管理器：启用滑动窗口压缩，最大保留 80 条消息
+        auto default_context = std::make_shared<DefaultContextManager>();
+        default_context->set_max_messages(80);
+        context_ = default_context;
+    }
 
     tools_ = config.tool_registry
         ? config.tool_registry
@@ -228,8 +233,18 @@ void Agent::Impl::init_components(const AgentConfig& config)
                 skill_doc += "Skills directory: " +
                              std::filesystem::absolute(config.skill_dirs[0]).string() + "\n\n";
             }
+            // 提取描述的第一句话（以 . 或换行分割），最多 80 字符
+            auto first_sentence = [](const std::string& desc) -> std::string {
+                if (desc.empty()) return "";
+                auto pos = desc.find_first_of(".\n\r");
+                if (pos != std::string::npos && pos > 0 && pos < 80) {
+                    return desc.substr(0, pos + 1);
+                }
+                if (desc.size() <= 80) return desc;
+                return desc.substr(0, 80) + "...";
+            };
             for (auto& skill : skills) {
-                skill_doc += "- **" + skill.name + "**: " + skill.description + "\n";
+                skill_doc += "- **" + skill.name + "**: " + first_sentence(skill.description) + "\n";
             }
             personality_docs_.skill_doc = u8str_util::to_u8str(skill_doc);
         }

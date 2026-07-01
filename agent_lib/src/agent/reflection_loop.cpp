@@ -199,7 +199,7 @@ void ReflectionLoop::run(const u8str& user_input) {
 
 // ========== Phase 1: Generate ==========
 
-u8str ReflectionLoop::generate_answer(const u8str& system_prompt,
+u8str ReflectionLoop::generate_answer(u8str& system_prompt,
                                       const nlohmann::json& tools_schema) {
     u8str last_content;
 
@@ -278,6 +278,36 @@ u8str ReflectionLoop::generate_answer(const u8str& system_prompt,
             set_state(AgentState::Thinking);
             context_.add_tool_message(tr.tool_call_id, tr.content);
         }
+
+        // 处理 load_mcp_tool 调用，动态激活 MCP 工具并更新 system prompt 中的 MCP 索引
+        process_load_mcp_tool(response.tool_calls, system_prompt, reflection_instruction());
+    }
+
+    // max_steps 耗尽时，若最后一次响应没有文本内容，请求 LLM 基于上下文生成最终答案
+    if (last_content.empty()) {
+        AGENT_LOG_DEBUG("Reflection") << "max_steps reached with empty last_content, requesting final summary";
+        context_.add_user_message(u8str(u8"You have reached the maximum number of reasoning steps. "
+            u8"Please provide a final answer based on the conversation above. "
+            u8"Do not call any tools; output the answer directly."));
+
+        LlmRequest final_request;
+        final_request.messages = context_.get_messages();
+        final_request.system_prompt = system_prompt;
+        // 不传递 tools，强制生成纯文本答案
+
+        try {
+            LlmResponse final_response = llm_provider_->send_request(final_request);
+            record_token_usage(final_response);
+            if (!final_response.is_error && !final_response.content.empty()) {
+                last_content = final_response.content;
+                context_.add_assistant_message(final_response.content);
+            } else if (final_response.is_error) {
+                AGENT_LOG_ERROR("Reflection") << "Final summary LLM error: "
+                    << u8str_util::to_string(final_response.error_message);
+            }
+        } catch (const std::exception& e) {
+            AGENT_LOG_ERROR("Reflection") << "Final summary LLM call error: " << e.what();
+        }
     }
 
     return last_content;
@@ -353,7 +383,7 @@ CritiqueResult ReflectionLoop::critique(const u8str& user_query, const u8str& an
 
 // ========== Phase 2: Refine ==========
 
-u8str ReflectionLoop::refine_answer(const u8str& system_prompt,
+u8str ReflectionLoop::refine_answer(u8str& system_prompt,
                                     const u8str& user_query,
                                     const u8str& current_answer,
                                     const CritiqueResult& critique,
@@ -517,28 +547,16 @@ bool ReflectionLoop::needs_confirmation(const ToolCall& tool_call) const {
 
 u8str ReflectionLoop::reflection_instruction() const {
     static const u8str cached = u8str_util::to_u8str(
-        "You are an AI agent that uses the Reflection pattern to produce high-quality responses.\n"
+        "You are a Reflection agent that produces high-quality responses through iterative refinement.\n"
         "\n"
-        "Your process works in phases:\n"
-        "1. GENERATE: Produce an initial answer to the user's request. Use available tools "
-        "if you need external information or to perform actions.\n"
-        "2. CRITIQUE: Your answer will be evaluated by a critic. The critic checks for "
-        "correctness, completeness, clarity, and actionability.\n"
-        "3. REFINE: If the critic finds issues, you will receive specific feedback and "
-        "have the opportunity to improve your answer.\n"
+        "Phases: GENERATE → CRITIQUE (by reviewer) → REFINE (address feedback) → repeat.\n"
+        "Use tools via function calling. Call them by name with exact parameter schemas.\n"
+        "MCP tools require `load_mcp_tool` first: load_mcp_tool([\"tool1\", \"tool2\"]).\n"
         "\n"
         "Guidelines:\n"
-        "- Be thorough and accurate in your initial response.\n"
-        "- Use tools when necessary to gather information or verify facts.\n"
+        "- Be thorough and accurate. Use tools to gather information or verify facts.\n"
         "- When given critique feedback, address ALL issues mentioned.\n"
-        "- Think carefully about the user's intent and provide actionable responses.\n"
-        "\n"
-        "All available tools are provided via function calling.\n"
-        "Each MCP sub-tool is available as a separate callable function.\n"
-        "Call them directly by their full name (e.g. servername_toolname).\n"
-        "Follow the tool's parameter schema exactly when making calls.\n"
-        "\n"
-        "When you have the final answer, respond with your answer directly."
+        "- When done, respond with your answer directly."
     );
     return cached;
 }

@@ -98,6 +98,12 @@ protected:
     // 供子类追加到 system prompt 中
     std::string build_mcp_tool_index() const;
 
+    // 处理 load_mcp_tool 调用：解析工具名、激活 MCP 工具、重建 schema、更新 system prompt
+    // 返回是否实际处理了 load_mcp_tool
+    bool process_load_mcp_tool(const std::vector<ToolCall>& tool_calls,
+                               u8str& system_prompt,
+                               const u8str& base_instruction);
+
     // 记录一次 LLM 调用的 token 用量到会话级累加器
     // 在各 Loop 的 send_request 返回后调用；无 usage 或出错时跳过
     void record_token_usage(const LlmResponse& response);

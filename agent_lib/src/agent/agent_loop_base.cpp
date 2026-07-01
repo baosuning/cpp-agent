@@ -133,7 +133,7 @@ void AgentLoopBase::clear_active_mcp_tools() {
 }
 
 // 提取描述的第一句（以 . 或换行分割），最多 max_len 字符
-static std::string extract_first_sentence(const std::string& desc, size_t max_len = 100) {
+static std::string extract_first_sentence(const std::string& desc, size_t max_len = 80) {
     if (desc.empty()) return "[No description]";
     // 找第一个句号或换行
     auto pos = desc.find_first_of(".\n\r");
@@ -150,8 +150,6 @@ std::string AgentLoopBase::build_mcp_tool_index() const {
 
     std::string index;
     index += "## Available MCP Tools\n\n";
-    index += "You must call `load_mcp_tool` to load a tool's complete definition before using it.\n";
-    index += "Pass tool names as an array: load_mcp_tool([\"tool1\", \"tool2\"]).\n\n";
 
     for (const auto& mcp : mcps) {
         auto sn = mcp->name();
@@ -159,7 +157,7 @@ std::string AgentLoopBase::build_mcp_tool_index() const {
         auto tools = mcp->list_tools();
         if (tools.empty()) continue;
 
-        index += "### " + server_str + " (" + std::to_string(tools.size()) + " tools)\n";
+        index += "### " + server_str + "\n";
         for (const auto& tool : tools) {
             if (!tool.contains("name")) continue;
             std::string tool_name = tool["name"].get<std::string>();
@@ -219,6 +217,53 @@ nlohmann::json AgentLoopBase::build_combined_tools_schema() const {
         }
     }
     return tools_list;
+}
+
+bool AgentLoopBase::process_load_mcp_tool(const std::vector<ToolCall>& tool_calls,
+                                          u8str& system_prompt,
+                                          const u8str& base_instruction) {
+    bool processed = false;
+    for (const auto& tc : tool_calls) {
+        std::string tc_name(tc.name.begin(), tc.name.end());
+        if (tc_name != "load_mcp_tool") {
+            continue;
+        }
+        processed = true;
+
+        // 解析参数，提取 tool_names 并加入 active_mcp_tools_
+        try {
+            std::string args_str(tc.arguments.begin(), tc.arguments.end());
+            auto args_json = nlohmann::json::parse(args_str);
+            if (args_json.contains("tool_names") && args_json["tool_names"].is_array()) {
+                for (const auto& name : args_json["tool_names"]) {
+                    if (name.is_string()) {
+                        add_active_mcp_tool(name.get<std::string>());
+                    }
+                }
+            }
+        } catch (...) {
+            // 解析失败不影响流程
+        }
+
+        try {
+            auto new_schema = build_combined_tools_schema();
+            // 更新 system prompt 中的 MCP 索引（标注 [LOADED] 状态）
+            std::string new_mcp_index = build_mcp_tool_index();
+            if (!new_mcp_index.empty()) {
+                system_prompt = prompt_builder_.build_system_prompt(
+                    personality_docs_,
+                    base_instruction + u8str(u8"\n") +
+                        u8str(reinterpret_cast<const char8_t*>(new_mcp_index.data()),
+                              new_mcp_index.size()));
+            }
+            AGENT_LOG_DEBUG("AgentLoopBase") << "rebuilt tools_schema after load_mcp_tool, now "
+                << new_schema.size() << " tools";
+        } catch (const std::exception& e) {
+            AGENT_LOG_ERROR("AgentLoopBase") << "rebuild tools_schema failed: " << e.what();
+        }
+        break;
+    }
+    return processed;
 }
 
 }  // namespace agent

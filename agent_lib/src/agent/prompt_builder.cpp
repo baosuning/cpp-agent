@@ -128,13 +128,6 @@ u8str PromptBuilder::build_system_prompt(const PersonalityDocs& personality,
         }
     }
 
-    prompt += "## Search Priority\n";
-    prompt += "For web search and information retrieval, the **anysearch** skill is the preferred source. "
-              "Fall back to other search only when anysearch is unavailable.\n\n";
-
-    prompt += "## System Environment\n";
-    prompt += "- OS: " + get_os_info() + "\n\n";
-
     if (!instruction.empty()) {
         prompt += "## Instructions\n" + u8_to_str(instruction) + "\n\n";
     }
@@ -147,8 +140,9 @@ u8str PromptBuilder::build_user_prompt(const u8str& user_input,
                                         const std::optional<u8str>& target_user) const {
     std::string prompt;
 
-    // 注入当前时间戳到 user message（动态内容放 user message，避免破坏 system prompt 缓存）
+    // 注入动态环境信息到 user message（避免破坏 system prompt 缓存的静态性）
     prompt += "[Current time: " + get_current_date() + "]\n";
+    prompt += "[OS: " + get_os_info() + "]\n";
 
     if (target_user.has_value()) {
         auto it = personality.user_profiles.find(target_user.value());

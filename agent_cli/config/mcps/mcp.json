@@ -15,6 +15,11 @@
       "command": "obscura.exe",
       "args": ["mcp", "--stealth"],
       "timeout": 120000
+    },
+    "headroom": {
+      "command": "headroom",
+      "args": ["mcp", "serve"],
+      "timeout": 120000
     }
   }
 }

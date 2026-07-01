@@ -72,6 +72,8 @@ void ReactLoop::run(const u8str& user_input) {
         }
 
         u8str last_content;
+        int consecutive_tool_errors = 0;
+        constexpr int kMaxConsecutiveToolErrors = 3;
 
         for (int step = 0; step < config_.max_steps; ++step) {
             try {
@@ -197,6 +199,18 @@ void ReactLoop::run(const u8str& user_input) {
                             set_state(AgentState::WaitingToolResult);
                             ToolResult tool_result = execute_tool(tool_call);
                             set_state(AgentState::Thinking);
+                            if (tool_result.is_error) {
+                                consecutive_tool_errors++;
+                            } else {
+                                consecutive_tool_errors = 0;
+                            }
+                            if (consecutive_tool_errors >= kMaxConsecutiveToolErrors) {
+                                u8str err_msg = u8str(u8"[Too many consecutive tool failures] Last error: ")
+                                              + tool_result.content;
+                                AGENT_LOG_ERROR("ReAct") << u8str_util::to_string(err_msg);
+                                emit_error(err_msg);
+                                return;
+                            }
                             if (config_.debug) {
                                 std::string tr_content = u8str_util::to_string(tool_result.content);
                                 AGENT_LOG_DEBUG("ReAct") << "Tool result: is_error=" << tool_result.is_error
@@ -227,9 +241,13 @@ void ReactLoop::run(const u8str& user_input) {
 
                         set_state(AgentState::Thinking);
 
+                        bool batch_has_error = false;
                         for (size_t i = 0; i < response.tool_calls.size(); ++i) {
                             const auto& tool_call = response.tool_calls[i];
                             ToolResult tool_result = futures[i].get();
+                            if (tool_result.is_error) {
+                                batch_has_error = true;
+                            }
 
                             if (config_.debug) {
                                 std::string tr_content = u8str_util::to_string(tool_result.content);
@@ -245,49 +263,32 @@ void ReactLoop::run(const u8str& user_input) {
                             tool_step.timestamp = std::chrono::system_clock::now();
                             add_thinking_step(std::move(tool_step));
                         }
+
+                        if (batch_has_error) {
+                            consecutive_tool_errors++;
+                        } else {
+                            consecutive_tool_errors = 0;
+                        }
+                        if (consecutive_tool_errors >= kMaxConsecutiveToolErrors) {
+                            u8str err_msg = u8str(u8"[Too many consecutive tool failures] "
+                                                  u8"Multiple tool calls failed in the last step.");
+                            AGENT_LOG_ERROR("ReAct") << u8str_util::to_string(err_msg);
+                            emit_error(err_msg);
+                            return;
+                        }
                     }
 
-                    // 检查是否调用了 load_mcp_tool，如果是则更新 active_mcp_tools_ 并重建 tools_schema
-                    for (const auto& tc : response.tool_calls) {
-                        std::string tc_name(tc.name.begin(), tc.name.end());
-                        if (tc_name == "load_mcp_tool") {
-                            // 解析参数，提取 tool_names 并加入 active_mcp_tools_
-                            try {
-                                std::string args_str(tc.arguments.begin(), tc.arguments.end());
-                                auto args_json = nlohmann::json::parse(args_str);
-                                if (args_json.contains("tool_names") && args_json["tool_names"].is_array()) {
-                                    for (const auto& name : args_json["tool_names"]) {
-                                        if (name.is_string()) {
-                                            add_active_mcp_tool(name.get<std::string>());
-                                        }
-                                    }
-                                }
-                            } catch (...) {
-                                // 解析失败不影响流程
-                            }
-
-                            try {
-                                cached_tools_schema = build_combined_tools_schema();
-                                // 更新 system prompt 中的 MCP 索引（标注 [LOADED] 状态）
-                                std::string new_mcp_index = build_mcp_tool_index();
-                                if (!new_mcp_index.empty()) {
-                                    system_prompt = prompt_builder_.build_system_prompt(
-                                        personality_docs_,
-                                        base_instruction + u8str(u8"\n") +
-                                            u8str(reinterpret_cast<const char8_t*>(new_mcp_index.data()),
-                                                  new_mcp_index.size()));
-                                }
-                                AGENT_LOG_DEBUG("ReAct") << "rebuilt tools_schema after load_mcp_tool, now "
-                                    << cached_tools_schema.size() << " tools";
-                            } catch (const std::exception& e) {
-                                AGENT_LOG_ERROR("ReAct") << "rebuild tools_schema failed: " << e.what();
-                            }
-                            break;
-                        }
+                    // 处理 load_mcp_tool 调用，动态激活 MCP 工具并更新 schema / system prompt
+                    if (process_load_mcp_tool(response.tool_calls, system_prompt, base_instruction)) {
+                        cached_tools_schema = build_combined_tools_schema();
+                        AGENT_LOG_DEBUG("ReAct") << "rebuilt tools_schema after load_mcp_tool, now "
+                            << cached_tools_schema.size() << " tools";
                     }
 
                     continue;
                 }
+
+                consecutive_tool_errors = 0;
 
                 context_.add_assistant_message(response.content);
 
@@ -304,6 +305,33 @@ void ReactLoop::run(const u8str& user_input) {
                 AGENT_LOG_ERROR("ReAct") << "Step error: " << e.what();
                 emit_error(u8str_util::to_u8str(std::string("[ReactLoop Step Error] step=") + std::to_string(step)));
                 return;
+            }
+        }
+
+        // max_steps 耗尽时，若最后一次响应没有文本内容，请求 LLM 基于上下文生成最终答案
+        if (last_content.empty()) {
+            AGENT_LOG_DEBUG("ReAct") << "max_steps reached with empty last_content, requesting final summary";
+            context_.add_user_message(u8str(u8"You have reached the maximum number of reasoning steps. "
+                u8"Please provide a final answer based on the conversation above. "
+                u8"Do not call any tools; output the answer directly."));
+
+            LlmRequest final_request;
+            final_request.messages = context_.get_messages();
+            final_request.system_prompt = system_prompt;
+            // 不传递 tools，强制生成纯文本答案
+
+            try {
+                LlmResponse final_response = llm_provider_->send_request(final_request);
+                record_token_usage(final_response);
+                if (!final_response.is_error && !final_response.content.empty()) {
+                    last_content = final_response.content;
+                    context_.add_assistant_message(final_response.content);
+                } else if (final_response.is_error) {
+                    AGENT_LOG_ERROR("ReAct") << "Final summary LLM error: "
+                        << u8str_util::to_string(final_response.error_message);
+                }
+            } catch (const std::exception& e) {
+                AGENT_LOG_ERROR("ReAct") << "Final summary LLM call error: " << e.what();
             }
         }
 
@@ -454,7 +482,10 @@ ToolResult ReactLoop::execute_tool(const ToolCall& tool_call) {
         }
     } else {
         result.is_error = true;
-        result.content = u8str(u8"[Tool Not Found] ") + tool_call.name;
+        result.content = u8str(u8"[Tool Not Found] '") + tool_call.name
+                       + u8str(u8"' is not a registered tool or loaded MCP tool. "
+                               u8"If you intended to use a skill, call `read_skill` with the skill name instead. "
+                               u8"Never call skill names as tools.");
         AGENT_LOG_ERROR("ReAct") << "Tool not found: " << tool_name_str;
     }
 
@@ -481,21 +512,18 @@ bool ReactLoop::needs_confirmation(const ToolCall& tool_call) const {
 }
 
 u8str ReactLoop::react_instruction() const {
-    static const u8str kInstruction = u8str(u8"You are an AI agent that follows the ReAct (Reasoning + Acting) pattern.\n"
+    static const u8str kInstruction = u8str(u8"You are a ReAct (Reasoning + Acting) agent.\n"
         "\n"
-        "For each step:\n"
-        "1. THINK: Reason about the current situation and decide what to do next.\n"
-        "2. ACT: If you need to use a tool, respond with a tool_call.\n"
-        "3. OBSERVE: Process the result of the tool execution.\n"
-        "4. Repeat until you can provide a final answer.\n"
+        "Loop: THINK → ACT (tool_call) → OBSERVE (result) → repeat until final answer.\n"
         "\n"
-        "All available tools are provided via function calling.\n"
-        "Each MCP sub-tool is available as a separate callable function.\n"
-        "Call them directly by their full name (e.g. servername_toolname).\n"
-        "Follow the tool's parameter schema exactly when making calls.\n"
+        "Tools are provided via function calling. Call them by name with exact parameter schemas.\n"
+        "MCP tools require `load_mcp_tool` first: load_mcp_tool([\"tool1\", \"tool2\"]).\n"
         "\n"
-        "When you have the final answer, respond with your answer directly.\n"
-        "If an action requires user confirmation, state that clearly.\n");
+        "IMPORTANT: Skill names in the 'Available Skills' list are NOT callable tools.\n"
+        "If you need to use a skill, call `read_skill` with the skill name to load its instructions.\n"
+        "Never call a skill name directly as a tool.\n"
+        "\n"
+        "When done, respond with your answer directly.\n");
     return kInstruction;
 }
 

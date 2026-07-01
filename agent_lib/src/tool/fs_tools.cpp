@@ -491,6 +491,43 @@ void RenamePathTool::execute_async(const u8str& arguments, std::function<void(u8
 bool RenamePathTool::requires_confirmation() const { return true; }
 
 // ============================================================
+// GetCurrentDirectoryTool
+// ============================================================
+
+u8str GetCurrentDirectoryTool::name() const {
+    return u8str_util::to_u8str("get_cwd");
+}
+
+u8str GetCurrentDirectoryTool::description() const {
+    return u8str_util::to_u8str("Get the current working directory of the agent process");
+}
+
+u8str GetCurrentDirectoryTool::parameters_schema() const {
+    return u8str_util::to_u8str(R"schema({
+        "type": "object",
+        "properties": {},
+        "required": []
+    })schema");
+}
+
+u8str GetCurrentDirectoryTool::execute(const u8str& arguments) {
+    try {
+        auto cwd = fs::current_path();
+        json result;
+        result["cwd"] = cwd.string();
+        return result_json(true, result.dump());
+    } catch (const std::exception& e) {
+        return result_json(false, "", e.what());
+    }
+}
+
+void GetCurrentDirectoryTool::execute_async(const u8str& arguments, std::function<void(u8str)> callback) {
+    callback(execute(arguments));
+}
+
+bool GetCurrentDirectoryTool::requires_confirmation() const { return false; }
+
+// ============================================================
 // Factory
 // ============================================================
 
@@ -503,6 +540,7 @@ std::vector<ToolPtr> create_file_system_tools() {
     tools.push_back(std::make_shared<SearchFileTool>());
     tools.push_back(std::make_shared<DeletePathTool>());
     tools.push_back(std::make_shared<RenamePathTool>());
+    tools.push_back(std::make_shared<GetCurrentDirectoryTool>());
     return tools;
 }
 

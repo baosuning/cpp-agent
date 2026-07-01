@@ -8,6 +8,15 @@ import os
 import sys
 import requests
 
+# Windows: 强制控制台使用 UTF-8 代码页，避免输出被终端按 GBK 解析为乱码
+if sys.platform == "win32":
+    try:
+        import ctypes
+        ctypes.windll.kernel32.SetConsoleOutputCP(65001)
+        ctypes.windll.kernel32.SetConsoleCP(65001)
+    except Exception:
+        pass
+
 if sys.stdout.encoding != "utf-8":
     sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace")
 if sys.stderr.encoding != "utf-8":

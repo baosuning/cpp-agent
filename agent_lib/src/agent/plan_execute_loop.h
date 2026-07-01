@@ -52,7 +52,6 @@ private:
     Plan           parse_plan(const u8str& llm_output) const;
     Plan           try_parse_json_plan(const u8str& llm_output) const;
     Plan           parse_text_plan(const u8str& llm_output) const;
-    void           execute_single_step(const u8str& step_prompt, const u8str& system_prompt);
     u8str          plan_execute_instruction() const;
     u8str          execution_instruction() const;
 
@@ -72,6 +71,9 @@ private:
 
     // 构建步骤执行 prompt（含 tool_hint / tool_args_hint）
     u8str          build_step_prompt(const PlanStep& step, int step_idx, int total) const;
+
+    // 执行单个步骤；system_prompt 非 const，允许 load_mcp_tool 调用后更新 MCP 索引
+    void           execute_single_step(const u8str& step_prompt, u8str& system_prompt);
 
     // 步骤结果处理动作
     enum class StepAction { Continue, Retry, ReplanFromStart, Pause, Break };

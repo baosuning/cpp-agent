@@ -46,7 +46,11 @@ Use these exact command shapes for routine calls. Replace `<cmd>` with the comma
 <cmd> search "AAPL" --domain finance --sub_domain finance.us_stock --sdp ticker=AAPL
 <cmd> search "latest trends" --domain finance --sub_domain finance.market --sdp region=US,timeframe=2025Q1
 
-# Discover sub-domains. Required before any vertical search.
+# A-share stock quote (example: 603039.SH). get_sub_domains finance.quote returns:
+#   required params: type, symbol, cn_code
+<cmd> search "603039.SH" --domain finance --sub_domain finance.quote --sdp type=stock,symbol=603039.SH,cn_code=603039.SH,period=7d
+
+# Discover sub-domains. Required before any vertical search when the sub_domain is unknown.
 <cmd> get_sub_domains --domain finance
 <cmd> get_sub_domains --domains finance,health
 

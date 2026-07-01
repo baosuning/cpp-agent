@@ -55,7 +55,8 @@ private:
 
     // 调用 LLM 生成回答（支持工具调用），返回最终文本内容
     // 内部实现一个简化的 ReAct 子循环：LLM 可以调用工具，直到给出纯文本回答或达到 max_steps
-    u8str     generate_answer(const u8str& system_prompt,
+    // system_prompt 非 const，允许 load_mcp_tool 调用后更新 MCP 索引
+    u8str     generate_answer(u8str& system_prompt,
                               const nlohmann::json& tools_schema);
 
     // ========== Phase 2: 反思与改进 ==========
@@ -64,7 +65,8 @@ private:
     CritiqueResult critique(const u8str& user_query, const u8str& answer);
 
     // 调用 Generator LLM 根据批评反馈改进回答
-    u8str     refine_answer(const u8str& system_prompt,
+    // system_prompt 非 const，允许 load_mcp_tool 调用后更新 MCP 索引
+    u8str     refine_answer(u8str& system_prompt,
                              const u8str& user_query,
                              const u8str& current_answer,
                              const CritiqueResult& critique,

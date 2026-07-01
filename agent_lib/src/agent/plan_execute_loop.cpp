@@ -808,7 +808,7 @@ static std::vector<ToolCall> parse_text_tool_calls(const u8str& content, int nex
     return result;
 }
 
-void PlanExecuteLoop::execute_single_step(const u8str& step_prompt, const u8str& system_prompt) {
+void PlanExecuteLoop::execute_single_step(const u8str& step_prompt, u8str& system_prompt) {
     u8str last_content;
     int text_only_retry_count = 0;
     const int kMaxTextRetries = 3;
@@ -1010,6 +1010,11 @@ void PlanExecuteLoop::execute_single_step(const u8str& step_prompt, const u8str&
                 }
             }
 
+            // 处理 load_mcp_tool 调用，动态激活 MCP 工具并更新 schema / system prompt
+            if (process_load_mcp_tool(response.tool_calls, system_prompt, execution_instruction())) {
+                cached_tools_schema_ = build_combined_tools_schema();
+            }
+
             continue;
         }
 
@@ -1060,6 +1065,30 @@ void PlanExecuteLoop::execute_single_step(const u8str& step_prompt, const u8str&
 
     // Max steps reached within a single plan step
     PE_DEBUG("execute_single_step: max steps (" << config_.base.max_steps << ") reached");
+    if (last_content.empty()) {
+        PE_DEBUG("Requesting final step summary after max_steps");
+        context_.add_user_message(u8str(u8"You have reached the maximum number of reasoning steps for this plan step. "
+            u8"Please provide a one-sentence factual summary based on the tool results above. "
+            u8"Do not call any tools; output the summary directly."));
+
+        LlmRequest final_request;
+        final_request.messages = context_.get_messages();
+        final_request.system_prompt = system_prompt;
+        // 不传递 tools，强制生成纯文本总结
+
+        try {
+            LlmResponse final_response = call_llm_for_execute(final_request);
+            if (!final_response.is_error && !final_response.content.empty()) {
+                last_content = final_response.content;
+                context_.add_assistant_message(final_response.content);
+            } else if (final_response.is_error) {
+                PE_ERROR("Final summary LLM error: "
+                    << std::string(final_response.error_message.begin(), final_response.error_message.end()));
+            }
+        } catch (const std::exception& e) {
+            PE_ERROR("Final summary LLM call error: " << e.what());
+        }
+    }
     {
         std::lock_guard<std::mutex> lock(output_mutex_);
         if (!last_content.empty()) {
@@ -1657,52 +1686,30 @@ Plan PlanExecuteLoop::parse_text_plan(const u8str& llm_output) const {
 }
 
 u8str PlanExecuteLoop::plan_execute_instruction() const {
-    static const u8str kInstruction = u8str(u8"You are an AI agent that follows the Plan-and-Execute pattern.\n"
+    static const u8str kInstruction = u8str(u8"You are a Plan-and-Execute agent. You are in the PLANNING phase.\n"
         "\n"
-        "=== YOUR CURRENT TASK: PLANNING ONLY ===\n"
-        "You are in the PLANNING phase. Your ONLY job is to create a step-by-step plan.\n"
-        "DO NOT execute any actions. DO NOT call any tools. Just output the plan.\n"
-        "The system will execute the plan step by step after you finish planning.\n"
+        "ONLY create a plan. DO NOT call any tools. The system executes steps after planning.\n"
         "\n"
-        "=== PLAN FORMAT ===\n"
-        "Output your plan in JSON format wrapped in PLAN: and PLAN_END markers:\n"
+        "=== PLAN FORMAT (JSON, wrapped in PLAN:/PLAN_END markers) ===\n"
         "PLAN:\n"
         "[\n"
         "  {\n"
         "    \"id\": \"1\",\n"
-        "    \"description\": \"description of what to do\",\n"
+        "    \"description\": \"what to do (required)\",\n"
         "    \"depends_on\": [],\n"
-        "    \"tool_hint\": \"exact tool function name from the available tools\",\n"
+        "    \"tool_hint\": \"exact tool function name (e.g. servername_toolname)\",\n"
         "    \"tool_args_hint\": \"optional pre-filled JSON args\",\n"
-        "    \"expected_output\": \"optional expected result description\",\n"
+        "    \"expected_output\": \"optional expected result\",\n"
         "    \"condition\": \"optional: if step_N succeeded / if step_N failed\",\n"
         "    \"fallback_step\": \"optional step id to jump to on failure\"\n"
         "  }\n"
         "]\n"
         "PLAN_END\n"
         "\n"
-        "Field rules:\n"
-        "- id: step identifier (string, e.g. \"1\", \"2\")\n"
-        "- description: what to do (required)\n"
-        "- depends_on: list of step IDs that must complete first (optional, default [])\n"
-        "- tool_hint: exact tool function name from the available tools list (e.g. \"cloakbrowsermcp_cloak_navigate\")\n"
-        "- tool_args_hint: pre-filled tool arguments as JSON string (optional)\n"
-        "- expected_output: what the step should produce (optional, used for validation)\n"
-        "- condition: execution condition, e.g. \"if step_1 succeeded\" (optional)\n"
-        "- fallback_step: step ID to jump to if this step fails (optional)\n"
-        "\n"
-        "If you cannot output JSON, you may use the plain text format:\n"
-        "PLAN:\n"
-        "Step 1: <description>\n"
-        "Step 2: <description>\n"
-        "PLAN_END\n"
-        "\n"
-        "=== IMPORTANT RULES ===\n"
-        "1. DO NOT call any tools in the planning phase! Just output the plan text.\n"
-        "2. Each step should be a single, focused action.\n"
-        "3. Use tool_hint to specify which tool to use for each step.\n"
-        "4. The tool_hint must match an exact function name from the available tools.\n"
-        "5. Steps with no dependencies between them can run in parallel (use depends_on to specify order).\n");
+        "Rules:\n"
+        "- Each step must be a single, focused action.\n"
+        "- tool_hint must match an exact function name from available tools.\n"
+        "- Steps with no dependencies can run in parallel (use depends_on for ordering).\n");
     return kInstruction;
 }
 
